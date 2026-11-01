@@ -149,6 +149,9 @@ pub fn plan_view(plan_id: &str, plan: &OperationPlan) -> Value {
         "findings": plan.findings,
         "moves": plan.moves.iter().map(move_view).collect::<Vec<_>>(),
         "removals": plan.removals,
+        "sheet": plan.sheet.as_ref().map(|c| json!({
+            "changes": c.describe(), "from": c.from, "to": c.to,
+        })),
         "property_changes": plan.property_changes.iter().map(|c| json!({
             "reference": c.reference, "field": c.name, "from": c.from, "to": c.to,
         })).collect::<Vec<_>>(),

@@ -31,6 +31,7 @@ pub mod result;
 pub mod routing;
 pub mod rules;
 pub mod schematic;
+pub mod sheet;
 pub mod text;
 pub mod tidy;
 pub mod track_edit;

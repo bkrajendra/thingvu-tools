@@ -36,6 +36,7 @@ These need no capability of their own: `parts_lookup` (read-only; it returns cal
 | Netlist used for a tidy | ipc (includes power symbols and flags) | ipc | kicad_cli, plus power symbols and flags attached from the drawing |
 | Applying a tidy | Two commits; reloads the saved file if it fails, so unsaved changes must be saved first | Two commits (two undo steps); a failure after the first says how many undo steps to take | Verified copy, then atomic replace |
 | Circuit plans with `no_connects` and `power_flags` (`sch_plan_changes`) | ipc; each flag read back | ipc; not yet tried in the editor | Verified copy; each flag read back from the file |
+| Page and title block (`sch_page_plan`) | `SetPageSettings` and `SetTitleBlockInfo`, read back | same; not yet tried in the editor | `(paper …)` and `(title_block …)` rewritten in the text, loaded in `kicad-cli`, read back |
 | `sch_set_field` | One commit | One commit (one undo step) | Verified copy, then atomic replace |
 
 ## Board sessions (Phase 11)

@@ -206,6 +206,9 @@ pub struct OperationPlan {
     /// Fields of existing parts set to new text (part numbers, footprints, flags).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub property_changes: Vec<PropertyChange>,
+    /// A change of the sheet's page and title block (nothing else is in such a plan).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sheet: Option<crate::sheet::SheetChange>,
     pub expected_nets: Vec<ExpectedNet>,
     /// Component logical id → planned reference.
     pub references: BTreeMap<LogicalId, String>,

@@ -231,6 +231,44 @@ impl Session {
         })
     }
 
+    /// The page and title block of the open document.
+    pub async fn sheet(&self) -> Result<kicad_domain::sheet::SheetSettings, ToolError> {
+        let mut inner = self.inner.lock().await;
+        crate::sheet::read(&mut inner.client, &self.document).await
+    }
+
+    /// Sets the page and title block and reads them back. Nothing else in the document is touched,
+    /// so there is nothing to verify beyond the read-back.
+    async fn apply_sheet(&self, change: &kicad_domain::sheet::SheetChange) -> Result<ApplyReport, ToolError> {
+        let after = {
+            let mut inner = self.inner.lock().await;
+            crate::sheet::apply(&mut inner.client, &self.document, change).await?
+        };
+        let problems = if after.same_as(&change.to) {
+            vec![]
+        } else {
+            vec![format!(
+                "KiCad now has {:?}, not what was planned ({:?})",
+                kicad_domain::sheet::page_text(&after.page),
+                kicad_domain::sheet::page_text(&change.to.page)
+            )]
+        };
+        Ok(ApplyReport {
+            placed: vec![],
+            wires_created: 0,
+            labels_created: 0,
+            undo_steps: 0,
+            verification: vec![],
+            verified: problems.is_empty(),
+            backup_path: None,
+            moved: 0,
+            removed: 0,
+            fields_changed: 0,
+            placements_checked: change.describe().len(),
+            placement_problems: problems,
+        })
+    }
+
     /// A fingerprint of the document's symbols and connectivity. A plan made against one
     /// fingerprint is stale once it changes.
     pub async fn fingerprint(&self) -> Result<String, ToolError> {
@@ -303,6 +341,9 @@ impl Session {
                 ErrorCode::StalePlan,
                 "the schematic changed since the plan was made; make a new plan",
             ));
+        }
+        if let Some(change) = &plan.sheet {
+            return self.apply_sheet(change).await;
         }
 
         if !plan.moves.is_empty()

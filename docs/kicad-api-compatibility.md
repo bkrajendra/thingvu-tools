@@ -120,7 +120,7 @@ Probe: `crates/kicad-session/tests/live_probe14.rs`, headless, on the regulator 
 | `GetTextExtents` | **Handled.** Returns a box (position and size) for a temporary `Text`: "R1 probe" at 1 mm came back 7.08 x 1.61 mm. Replaces the Phase 13 estimate in 15.4 |
 | `GetPadShapeAsPolygon` | **Handled.** One outline per pad, in board coordinates, for a given layer |
 | `GetTitleBlockInfo` / `SetTitleBlockInfo` | **Handled.** Title and revision read back. The message has nine comment fields |
-| `GetPageSettings` / `SetPageSettings` | **Handled** for a read and a write of the same settings (A4 landscape). A change of size was not tried |
+| `GetPageSettings` / `SetPageSettings` | **Handled**, on a board and on a schematic. A change of size and of orientation takes and reads back (15.1, `live_probe15_page`). A custom size is kept in thousandths of an inch: 200 x 150 mm reads back as 199.9996 x 150.0124 and the saved file says so. `SetPageSettings` replies with the settings; `SetTitleBlockInfo` replies with nothing |
 | Tracks and vias: `CreateItems`, `UpdateItems`, `DeleteItems` | **Handled.** `UpdateItems` re-widens a track (0.25 -> 0.4 mm) and locks it (`LS_LOCKED` = 2, unlocked = 1) in place. **`DeleteItems` deletes a locked track without complaint** (status OK), so the tools must refuse locked items themselves unless the item is named |
 
 ## Re-pinning to a new KiCad build

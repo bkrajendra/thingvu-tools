@@ -229,6 +229,14 @@ impl AnySession {
         Ok(report)
     }
 
+    /// The page and title block as they are now.
+    pub async fn sheet(&self) -> Result<kicad_domain::sheet::SheetSettings, ToolError> {
+        match self {
+            Self::Ipc(s) => s.sheet().await,
+            Self::File(s) => s.sheet().await,
+        }
+    }
+
     pub async fn save(&self) -> Result<(), ToolError> {
         match self {
             Self::Ipc(s) => s.save().await,

@@ -12,6 +12,7 @@ pub mod pcb;
 pub mod pcb_detail;
 pub mod sch;
 pub mod ses;
+pub mod sheet;
 pub mod sym;
 
 pub use emit::{add_plan, set_property, EmitError};

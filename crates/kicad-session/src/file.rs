@@ -625,6 +625,9 @@ impl FileSession {
         }
         let text = String::from_utf8(bytes.clone())
             .map_err(|_| ToolError::new(ErrorCode::InvalidArgument, "the schematic is not valid UTF-8"))?;
+        if let Some(change) = &plan.sheet {
+            return self.apply_sheet(change, &bytes, &text).await;
+        }
         let doc = Document::parse(text).map_err(doc_error)?;
 
         let mut defs = BTreeMap::new();
@@ -721,6 +724,74 @@ impl FileSession {
             removed: plan.removals.len(),
             fields_changed: plan.field_changes.len(),
             placements_checked: 0,
+            placement_problems: vec![],
+        })
+    }
+
+    /// The page and title block of the file.
+    pub async fn sheet(&self) -> Result<kicad_domain::sheet::SheetSettings, ToolError> {
+        let bytes = self.read_bytes()?;
+        let text = String::from_utf8(bytes)
+            .map_err(|_| ToolError::new(ErrorCode::InvalidArgument, "the schematic is not valid UTF-8"))?;
+        kicad_sexpr::sheet::read(&text).map_err(|e| ToolError::new(ErrorCode::KicadError, e))
+    }
+
+    /// Writes a new page and title block into the file text. The new file must load in
+    /// `kicad-cli` and read back as planned before it replaces the old one.
+    async fn apply_sheet(
+        &self,
+        change: &kicad_domain::sheet::SheetChange,
+        bytes: &[u8],
+        text: &str,
+    ) -> Result<ApplyReport, ToolError> {
+        let not_applied = |e: ToolError| e.with_mutation_state(MutationState::NotApplied);
+        let current =
+            kicad_sexpr::sheet::read(text).map_err(|e| not_applied(ToolError::new(ErrorCode::KicadError, e)))?;
+        if !current.same_as(&change.from) {
+            return Err(ToolError::new(
+                ErrorCode::StalePlan,
+                "the page or title block changed since the plan was made; make a new plan",
+            ));
+        }
+        let new_text = kicad_sexpr::sheet::write(text, &change.to)
+            .map_err(|e| not_applied(ToolError::new(ErrorCode::KicadError, e)))?;
+        let reread =
+            kicad_sexpr::sheet::read(&new_text).map_err(|e| not_applied(ToolError::new(ErrorCode::KicadError, e)))?;
+        if !reread.same_as(&change.to) {
+            return Err(not_applied(ToolError::new(
+                ErrorCode::KicadError,
+                "the new file does not read back as planned; the schematic was not changed",
+            )));
+        }
+        let stem = self
+            .document_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let candidate = self.document_path.with_file_name(format!(
+            ".thingsvu-{}-{}.kicad_sch",
+            self.id,
+            fingerprint_of(new_text.as_bytes())
+        ));
+        write_synced(&candidate, new_text.as_bytes()).map_err(|e| io_error("write", &candidate, e))?;
+        let doc = Document::parse(new_text.clone()).map_err(doc_error)?;
+        if let Err(e) = self.netlist_of(&candidate, &doc.symbols()).await {
+            let _ = std::fs::remove_file(&candidate);
+            return Err(not_applied(e));
+        }
+        let backup_path = self.replace_with_candidate(bytes, &candidate, &stem)?;
+        Ok(ApplyReport {
+            placed: vec![],
+            wires_created: 0,
+            labels_created: 0,
+            undo_steps: 0,
+            verification: vec![],
+            verified: true,
+            backup_path,
+            moved: 0,
+            removed: 0,
+            fields_changed: 0,
+            placements_checked: change.describe().len(),
             placement_problems: vec![],
         })
     }

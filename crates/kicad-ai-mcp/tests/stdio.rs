@@ -159,6 +159,7 @@ async fn lists_tools_and_returns_envelopes() {
             "sch_get_symbol_pins",
             "sch_label_plan",
             "sch_list_symbols",
+            "sch_page_plan",
             "sch_pin_net_plan",
             "sch_plan_changes",
             "sch_reconnect_plan",
@@ -5228,4 +5229,157 @@ async fn live_the_file_edit_steps_of_a_real_session_are_tool_calls() {
     );
     mcp.call("pcb_close", json!({ "session_id": id, "discard_unsaved": true }))
         .await;
+}
+
+/// Phase 15.1: the page and title block of a schematic are planned, applied, and read back, and
+/// nothing else on the sheet changes (the netlist is the same before and after).
+#[tokio::test]
+async fn live_page_and_title_block_through_the_file_provider() {
+    page_flow("file").await;
+}
+
+#[tokio::test]
+async fn live_page_and_title_block_through_the_api() {
+    page_flow("headless").await;
+}
+
+async fn page_flow(provider: &str) {
+    if std::env::var("KICAD_LIVE").as_deref() != Ok("1") {
+        eprintln!("skipped: set KICAD_LIVE=1");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("thingsvu-mcp-page-{provider}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let schematic = dir.join("page.kicad_sch");
+    let mut mcp = Mcp::start().await;
+    let opened = mcp
+        .call(
+            "session_open",
+            json!({ "schematic_path": schematic, "create": true, "provider": provider }),
+        )
+        .await;
+    assert_eq!(opened["ok"], true, "{opened}");
+    let id = opened["result"]["session_id"].clone();
+    let key = |n: &str| format!("page-{provider}-{n}-{}", std::process::id());
+    let apply = |mcp_plan: &Value, n: &str| json!({ "session_id": id, "plan_id": mcp_plan["result"]["plan_id"], "confirm": true, "idempotency_key": key(n) });
+    let circuit: Value = serde_json::from_str(include_str!("../../../docs/examples/regulator-3v3.json")).unwrap();
+    let plan = mcp
+        .call("sch_plan_changes", json!({ "session_id": id, "circuit": circuit }))
+        .await;
+    let applied = mcp.call("sch_apply_plan", apply(&plan, "build")).await;
+    assert_eq!(applied["result"]["verified"], true, "{applied}");
+    mcp.call("sch_save", json!({ "session_id": id })).await;
+    let nets_before = mcp.call("sch_get_netlist", json!({ "session_id": id })).await["result"]["nets"].clone();
+
+    // Refusals.
+    for bad in [
+        json!({ "session_id": id }),
+        json!({ "session_id": id, "size": "A9" }),
+        json!({ "session_id": id, "width_mm": 200 }),
+        json!({ "session_id": id, "size": "A3", "width_mm": 200, "height_mm": 150 }),
+        json!({ "session_id": id, "width_mm": 5, "height_mm": 150 }),
+        json!({ "session_id": id, "comments": { "10": "x" } }),
+        json!({ "session_id": id, "comments": { "first": "x" } }),
+        json!({ "session_id": id, "size": "A4", "orientation": "landscape" }),
+    ] {
+        let r = mcp.call("sch_page_plan", bad.clone()).await;
+        let refused = r["ok"] == false || r["result"]["can_apply"] == false;
+        assert!(refused, "{bad}: {r}");
+    }
+
+    // A3, portrait, and a title block.
+    let plan = mcp
+        .call(
+            "sch_page_plan",
+            json!({ "session_id": id, "size": "a3", "orientation": "portrait",
+                    "title": "Regulator \"3V3\"", "date": "2026-11-01", "revision": "B",
+                    "company": "Thingsvu", "comments": { "1": "first", "9": "ninth" } }),
+        )
+        .await;
+    assert_eq!(plan["ok"], true, "{plan}");
+    assert_eq!(plan["result"]["can_apply"], true, "{plan}");
+    let changes = plan["result"]["sheet"]["changes"].to_string();
+    assert!(
+        changes.contains("A3, portrait") && changes.contains("comment 9"),
+        "{plan}"
+    );
+    assert_eq!(
+        plan["result"]["counts"]["symbols"], 0,
+        "nothing else is in the plan: {plan}"
+    );
+    let applied = mcp.call("sch_apply_plan", apply(&plan, "a3")).await;
+    assert_eq!(applied["ok"], true, "{applied}");
+    assert_eq!(applied["result"]["verified"], true, "{applied}");
+    let again = mcp
+        .call(
+            "sch_page_plan",
+            json!({ "session_id": id, "size": "A3", "orientation": "portrait", "title": "Regulator \"3V3\"" }),
+        )
+        .await;
+    assert!(
+        again["result"]["findings"].to_string().contains("NOTHING_TO_CHANGE"),
+        "the page is read back as set: {again}"
+    );
+
+    // A page too small for the circuit is planned with a warning, and moves nothing.
+    let small = mcp
+        .call(
+            "sch_page_plan",
+            json!({ "session_id": id, "width_mm": 60, "height_mm": 60 }),
+        )
+        .await;
+    assert_eq!(small["result"]["can_apply"], true, "{small}");
+    assert!(
+        small["result"]["findings"].to_string().contains("PARTS_OFF_PAGE"),
+        "{small}"
+    );
+
+    // A custom page, a cleared comment, and a stale plan.
+    let custom = mcp
+        .call(
+            "sch_page_plan",
+            json!({ "session_id": id, "width_mm": 200, "height_mm": 150, "comments": { "9": "" } }),
+        )
+        .await;
+    assert_eq!(custom["ok"], true, "{custom}");
+    println!(
+        "PAGE ({provider}) custom plan findings: {}",
+        custom["result"]["findings"]
+    );
+    let stale = mcp
+        .call("sch_page_plan", json!({ "session_id": id, "size": "A2" }))
+        .await;
+    let applied = mcp.call("sch_apply_plan", apply(&custom, "custom")).await;
+    assert_eq!(applied["result"]["verified"], true, "{applied}");
+    let refused = mcp.call("sch_apply_plan", apply(&stale, "stale")).await;
+    assert_eq!(
+        refused["ok"], false,
+        "a plan made before the page changed is stale: {refused}"
+    );
+    assert_eq!(refused["error"]["code"], "STALE_PLAN", "{refused}");
+
+    // The file says the same, and the circuit is as it was.
+    mcp.call("sch_save", json!({ "session_id": id })).await;
+    let text = std::fs::read_to_string(&schematic).unwrap();
+    println!(
+        "PAGE ({provider}) file: {:?}",
+        text.lines()
+            .filter(|l| l.contains("(paper") || l.contains("(comment"))
+            .collect::<Vec<_>>()
+    );
+    assert!(text.contains("(paper \"User\""), "{text}");
+    assert!(text.contains("(title \"Regulator \\\"3V3\\\"\")"), "{text}");
+    assert!(
+        text.contains("(comment 1 \"first\")") && !text.contains("(comment 9"),
+        "{text}"
+    );
+    assert_eq!(
+        mcp.call("sch_get_netlist", json!({ "session_id": id })).await["result"]["nets"],
+        nets_before,
+        "only the page changed"
+    );
+    let erc = mcp.call("sch_run_erc", json!({ "session_id": id })).await;
+    assert_eq!(erc["ok"], true, "{erc}");
+    mcp.call("session_close", json!({ "session_id": id })).await;
 }

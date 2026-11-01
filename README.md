@@ -248,6 +248,7 @@ What each can do in detail: [capability matrix](docs/capability-matrix.md).
 | `sch_tidy_plan` | Plan a cleaner layout for an existing schematic: parts re-laid out, old wires and labels replaced, nets kept identical. Optional hints: `keep`, `place`, `near`. Changes nothing until applied |
 | `sch_describe_layout` | Where every part and pin is (mm), its rotation and body, and the net of each pin. Read-only |
 | `sch_arrange_plan` | Plan moving, turning, mirroring, or deleting named parts. Their wires stay and break until reconnected |
+| `sch_page_plan` | Page size (A5 to A0, ANSI, US, or custom) and orientation, and the title block: title, date, revision, company, comments 1 to 9. Nothing else on the sheet changes; warns when parts would end up off a smaller page |
 | `sch_pin_net_plan` | Move one pin to another net, or swap the nets of two pins, changing only those pins' wire, label, or power symbol (a short stub that names the new net); every net is read back from KiCad |
 | `sch_reconnect_plan` | Plan drawing all connections again with the parts where they are, for the circuit as it was before the moves |
 | `sch_declutter_plan` | Find text (part references and values, labels) that runs into other text, a wire, or a part, and plan moving it to a free place; `PWR_FLAG` text that has no room is hidden. Only text changes |

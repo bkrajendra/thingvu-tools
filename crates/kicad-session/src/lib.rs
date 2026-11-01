@@ -21,6 +21,7 @@ mod mutate;
 pub mod registry;
 mod schematic;
 mod session;
+mod sheet;
 pub mod symbols;
 
 pub use any::AnySession;

@@ -38,7 +38,7 @@ show it to the user, then sch_apply_plan or pcb_apply_plan (confirm: true, a fre
 applies it in one step, reads the result back from KiCad, and reports any mismatch; pcb_apply_plan \
 can take a checkpoint first (checkpoint: label). Do not edit .kicad_* files by hand: there is a tool \
 for each step below. Schematic: sch_plan_changes (circuit as components and nets, with no_connects \
-and power_flags), sch_pin_net_plan (move or swap a pin's net), sch_reconnect_plan, sch_label_plan, \
+and power_flags), sch_pin_net_plan (move or swap a pin's net), sch_page_plan (page size and title block), sch_reconnect_plan, sch_label_plan, \
 sch_draw_plan, sch_edit_items_plan, sch_tidy_plan, sch_arrange_plan, sch_declutter_plan; \
 sch_set_fields_plan sets Value, Footprint, MPN and other fields on many parts at once (sch_set_field \
 for one); sch_footprint_plan assigns footprints; sym_search and sym_get find symbols and their pins, \
@@ -145,6 +145,34 @@ pub struct CloseArgs {
 #[serde(deny_unknown_fields)]
 pub struct SessionArgs {
     pub session_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PagePlanArgs {
+    pub session_id: String,
+    /// A standard size: A5, A4, A3, A2, A1, A0, A, B, C, D, E (ANSI), USLetter, USLegal, USLedger, GERBER.
+    #[serde(default)]
+    pub size: Option<String>,
+    /// A custom page: both sides in mm (50 to 1219.2). Not with `size`.
+    #[serde(default)]
+    pub width_mm: Option<f64>,
+    #[serde(default)]
+    pub height_mm: Option<f64>,
+    /// `landscape` or `portrait` (standard sizes only).
+    #[serde(default)]
+    pub orientation: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub date: Option<String>,
+    #[serde(default)]
+    pub revision: Option<String>,
+    #[serde(default)]
+    pub company: Option<String>,
+    /// Comment lines by number, "1" to "9"; an empty text clears one.
+    #[serde(default)]
+    pub comments: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1850,6 +1878,76 @@ the pcbparts MCP, then record the answers with sch_set_fields_plan. Read-only."
             Ok(design) => envelope::ok(&cid, kicad_domain::bom::review(&design), live(&session), vec![]),
             Err(e) => envelope::error(&cid, &e),
         }
+    }
+
+    #[tool(
+        name = "sch_page_plan",
+        description = "Plan the schematic's page and title block: size (A5 to A0, ANSI A to E, US Letter, Legal, \
+Ledger, or a custom width_mm x height_mm), landscape or portrait, and the title block's title, date, revision, \
+company, and comments 1 to 9 (an empty text clears one). Anything left out stays as it is. Nothing else on the \
+sheet changes: a page that gets smaller does not move parts, so the plan warns when a part would end up off the \
+page. Works on every provider; the result is read back from KiCad or the file. Returns a plan_id; apply it with \
+sch_apply_plan, then sch_save (a file session is saved when applied)."
+    )]
+    pub async fn sch_page_plan(&self, Parameters(args): Parameters<PagePlanArgs>) -> CallToolResult {
+        let cid = envelope::correlation_id();
+        let session = match self.session(&args.session_id).await {
+            Ok(s) => s,
+            Err(e) => return envelope::error(&cid, &e),
+        };
+        let mut comments = std::collections::BTreeMap::new();
+        for (key, text) in &args.comments {
+            match key.trim().parse::<u8>() {
+                Ok(n) => {
+                    comments.insert(n, text.clone());
+                }
+                Err(_) => {
+                    return envelope::error(
+                        &cid,
+                        &ToolError::new(
+                            ErrorCode::InvalidArgument,
+                            format!("comments are keyed \"1\" to \"9\", not \"{key}\""),
+                        ),
+                    )
+                }
+            }
+        }
+        let request = kicad_domain::sheet::SheetRequest {
+            size: args.size.clone(),
+            width_mm: args.width_mm,
+            height_mm: args.height_mm,
+            orientation: args.orientation.clone(),
+            title: args.title.clone(),
+            date: args.date.clone(),
+            revision: args.revision.clone(),
+            company: args.company.clone(),
+            comments,
+        };
+        let plan = async {
+            let current = session.sheet().await?;
+            let mut plan = kicad_domain::sheet::plan_sheet(&current, &request);
+            // A smaller page leaves parts off the sheet; say so rather than move anything.
+            if let Some(change) = &plan.sheet {
+                if let Some((w, h)) = kicad_domain::sheet::size_mm(&change.to.page) {
+                    let design = session.design().await?;
+                    let off = kicad_domain::sheet::parts_off_page(&design, w, h);
+                    if !off.is_empty() {
+                        plan.findings.push(kicad_domain::validation::Finding {
+                            severity: kicad_domain::validation::Severity::Warning,
+                            code: "PARTS_OFF_PAGE",
+                            message: format!(
+                                "{} part(s) lie outside the new {w:.0} x {h:.0} mm page; move them with sch_arrange_plan or choose a larger page",
+                                off.len()
+                            ),
+                            objects: off,
+                        });
+                    }
+                }
+            }
+            Ok::<_, ToolError>(plan)
+        }
+        .await;
+        self.store_and_reply(&cid, &session, plan).await
     }
 
     #[tool(
