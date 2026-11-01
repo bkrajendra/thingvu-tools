@@ -4,7 +4,7 @@
 use kicad_domain::board_detail::{BoardDetail, FootprintDetail, PadDetail, ShapeDetail, TextDetail};
 use kicad_domain::{ErrorCode, Nm, Point, ToolError};
 use kicad_ipc::proto::kiapi::board::types::{
-    BoardGraphicShape, BoardText, BoardTextBox, Field, FootprintInstance, Pad, PadStackShape,
+    BoardGraphicShape, BoardText, BoardTextBox, Field, FootprintInstance, Pad, PadStackShape, ZoneConnectionStyle,
 };
 use kicad_ipc::proto::kiapi::common::commands::{GetItems, GetItemsResponse};
 use kicad_ipc::proto::kiapi::common::types::{
@@ -136,6 +136,14 @@ fn pad_detail(p: &Pad, copper: &[String]) -> PadDetail {
                 .collect()
         },
         net: net_name(&p.net),
+        zone_connection: match stack.zone_settings.as_ref().map(|z| z.zone_connection()) {
+            Some(ZoneConnectionStyle::ZcsNone) => "none",
+            Some(ZoneConnectionStyle::ZcsThermal) => "thermal",
+            Some(ZoneConnectionStyle::ZcsFull) => "full",
+            Some(ZoneConnectionStyle::ZcsPthThermal) => "pth_thermal",
+            _ => "inherited",
+        }
+        .to_owned(),
     }
 }
 

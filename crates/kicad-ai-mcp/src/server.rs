@@ -44,7 +44,8 @@ sch_set_fields_plan sets Value, Footprint, MPN and other fields on many parts at
 for one); sch_footprint_plan assigns footprints; sym_search and sym_get find symbols and their pins, \
 fp_search and fp_get find footprints; sch_run_erc and sch_render check the result. Board: \
 pcb_update_from_schematic_plan brings the schematic in; pcb_outline_plan, pcb_place_plan, \
-pcb_move_plan, pcb_footprint_attrs_plan (DNP, BOM, position-file flags), pcb_zone_plan; pcb_rules \
+pcb_move_plan, pcb_footprint_attrs_plan (DNP, BOM, position-file flags), pcb_footprint_edit_plan (pad hole, size, \
+zone connection; reference and value text), pcb_zone_plan; pcb_rules \
 and pcb_rules_plan read and change net classes, assignments, and minimums; pcb_route_plan draws the \
 tracks you name, pcb_autoroute_plan routes with Freerouting (whole board, chosen nets, or all but \
 some); pcb_track_edit_plan rips up, re-widths, locks, and unlocks tracks and vias that exist; \

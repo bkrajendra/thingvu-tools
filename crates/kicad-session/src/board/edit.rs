@@ -19,6 +19,7 @@ use kicad_ipc::proto::kiapi::board::types::{
     FootprintAttributes, FootprintInstance, Net, Pad, PadStack, PadStackLayer, PadStackShape, PadStackType, Track, Via,
     ViaType, Zone,
 };
+use kicad_ipc::proto::kiapi::board::types::{DrillShape, ZoneConnectionSettings, ZoneConnectionStyle};
 use kicad_ipc::proto::kiapi::common::commands::{
     BeginCommit, BeginCommitResponse, CommitAction, CreateItems, CreateItemsResponse, DeleteItems, EndCommit, GetItems,
     GetItemsFromLibrary, GetItemsResponse, ItemDeletionStatus, ItemStatusCode, LoadAllLibraries, UpdateItems,
@@ -52,6 +53,9 @@ pub struct EditReport {
     pub flipped: Vec<String>,
     /// Footprints whose attributes were set, by reference.
     pub attributes_set: Vec<String>,
+    /// Pads given another hole, size, or zone connection, and texts changed, by reference.
+    pub pads_edited: Vec<String>,
+    pub texts_edited: Vec<String>,
     /// Tracks, vias, and zones created.
     pub copper_items: usize,
     /// Tracks and vias given another width or lock.
@@ -625,6 +629,7 @@ impl BoardSession {
             "route" => "AI: route",
             "zone" => "AI: copper pour",
             "attributes" => "AI: footprint attributes",
+            "footprint" => "AI: footprint pads and text",
             "cleanup" => "AI: remove dangling vias",
             "tracks" => "AI: edit tracks",
             _ => "AI: move footprints",
@@ -643,10 +648,12 @@ impl BoardSession {
                 header: header(),
             })
             .await;
-        let zones_changed = plan
-            .operations
-            .iter()
-            .any(|o| matches!(o, BoardOp::AddZone(_) | BoardOp::RemoveZone { .. }));
+        let zones_changed = plan.operations.iter().any(|o| {
+            matches!(
+                o,
+                BoardOp::AddZone(_) | BoardOp::RemoveZone { .. } | BoardOp::EditPad { .. }
+            )
+        });
         match (result, ended) {
             (Ok(mut report), Ok(_)) if zones_changed => {
                 // After the commit: a refill inside it does not fill a zone made in it.
@@ -680,6 +687,111 @@ impl BoardSession {
             .with_mutation_state(MutationState::Unknown)),
         }
     }
+}
+
+/// Sets the hole, copper size, and zone connection on every pad of `f` numbered `number`.
+fn edit_pads(
+    f: &mut FootprintInstance,
+    reference: &str,
+    number: &str,
+    count: usize,
+    set: &kicad_domain::footprint_edit::PadValues,
+) -> Result<(), ToolError> {
+    let def = f
+        .definition
+        .as_mut()
+        .ok_or_else(|| kerr(format!("KiCad sent {reference} without its pads")))?;
+    let mut found = 0;
+    for item in def.items.iter_mut() {
+        if item.type_url != Pad::type_url() {
+            continue;
+        }
+        let mut pad: Pad = item.to_msg().map_err(|e| kerr(e.to_string()))?;
+        if pad.number != number {
+            continue;
+        }
+        found += 1;
+        let stack = pad.pad_stack.get_or_insert_with(Default::default);
+        if let Some((w, h)) = set.drill {
+            let drill = stack.drill.get_or_insert_with(Default::default);
+            drill.diameter = Some(Vector2 { x_nm: w.0, y_nm: h.0 });
+            drill.shape = if w == h {
+                DrillShape::DsCircle
+            } else {
+                DrillShape::DsOblong
+            } as i32;
+        }
+        if let Some((w, h)) = set.size {
+            for layer in stack.copper_layers.iter_mut() {
+                layer.size = Some(Vector2 { x_nm: w.0, y_nm: h.0 });
+            }
+        }
+        if let Some(z) = &set.zone_connection {
+            let style = match z.as_str() {
+                "none" => ZoneConnectionStyle::ZcsNone,
+                "thermal" => ZoneConnectionStyle::ZcsThermal,
+                "full" => ZoneConnectionStyle::ZcsFull,
+                "pth_thermal" => ZoneConnectionStyle::ZcsPthThermal,
+                _ => ZoneConnectionStyle::ZcsInherited,
+            };
+            stack
+                .zone_settings
+                .get_or_insert_with(ZoneConnectionSettings::default)
+                .zone_connection = style as i32;
+        }
+        *item = Any::from_msg(&pad).map_err(|e| kerr(e.to_string()))?;
+    }
+    if found != count {
+        return Err(ToolError::new(
+            ErrorCode::StalePlan,
+            format!("{reference} has {found} pad(s) numbered {number}, the plan found {count}; make a new plan"),
+        ));
+    }
+    Ok(())
+}
+
+/// Sets the layer, size, place, turn, and visibility of a footprint's reference or value text.
+fn edit_text(
+    f: &mut FootprintInstance,
+    reference: &str,
+    field: &str,
+    to: &kicad_domain::footprint_edit::TextValues,
+) -> Result<(), ToolError> {
+    let slot = if field == "Reference" {
+        &mut f.reference_field
+    } else {
+        &mut f.value_field
+    };
+    let field = slot.as_mut().ok_or_else(|| {
+        kerr(format!(
+            "KiCad sent {reference} without its {} text",
+            field.to_lowercase()
+        ))
+    })?;
+    field.visible = to.visible;
+    let board_text = field.text.get_or_insert_with(Default::default);
+    board_text.layer = board_layer(&to.layer)? as i32;
+    let text = board_text.text.get_or_insert_with(Default::default);
+    text.position = vector(to.at);
+    let attributes = text.attributes.get_or_insert_with(Default::default);
+    let old = attributes.size.unwrap_or_default();
+    // Width follows height, keeping the text's proportions.
+    let width = if old.y_nm > 0 {
+        (old.x_nm as f64 * to.height.0 as f64 / old.y_nm as f64).round() as i64
+    } else {
+        to.height.0
+    };
+    attributes.size = Some(Vector2 {
+        x_nm: width,
+        y_nm: to.height.0,
+    });
+    attributes.stroke_width = Some(Distance {
+        value_nm: to.thickness.0,
+    });
+    attributes.angle = Some(Angle {
+        value_degrees: to.angle_deg,
+    });
+    Ok(())
 }
 
 async fn apply_steps(
@@ -1034,6 +1146,63 @@ async fn apply_steps(
             a.not_in_schematic = to.board_only;
             items.push(f);
             report.attributes_set.push((*reference).clone());
+        }
+        update(client, header, items).await?;
+    }
+
+    // 4c. Pads and text (Phase 15.2): the footprint is sent as KiCad has it with its pads and fields
+    // changed. A pad sent on its own is refused ("not a footprint"); checked live.
+    let mut touched: Vec<&String> = Vec::new();
+    for o in &plan.operations {
+        if let BoardOp::EditPad { id, .. } | BoardOp::EditText { id, .. } = o {
+            if !touched.contains(&id) {
+                touched.push(id);
+            }
+        }
+    }
+    if !touched.is_empty() {
+        let current = footprints(client, header).await?;
+        let mut items = Vec::new();
+        for id in touched {
+            let mut f = current
+                .iter()
+                .find(|f| f.id.as_ref().is_some_and(|k| &k.value == id))
+                .cloned()
+                .ok_or_else(|| {
+                    ToolError::new(
+                        ErrorCode::StalePlan,
+                        "a footprint in the plan is no longer on the board; make a new plan",
+                    )
+                })?;
+            for o in &plan.operations {
+                match o {
+                    BoardOp::EditPad {
+                        reference,
+                        id: i,
+                        number,
+                        count,
+                        set,
+                        ..
+                    } if i == id => {
+                        edit_pads(&mut f, reference, number, *count, set)?;
+                        report.pads_edited.push(format!("{reference} pad {number}"));
+                    }
+                    BoardOp::EditText {
+                        reference,
+                        id: i,
+                        field,
+                        to,
+                        ..
+                    } if i == id => {
+                        edit_text(&mut f, reference, field, to)?;
+                        report
+                            .texts_edited
+                            .push(format!("{reference} {}", field.to_lowercase()));
+                    }
+                    _ => {}
+                }
+            }
+            items.push(f);
         }
         update(client, header, items).await?;
     }
@@ -1481,6 +1650,9 @@ async fn restore_steps(
                     || now.layer != was.layer
                     || now.locked != was.locked
                     || now.attributes != was.attributes
+                    || now.definition != was.definition
+                    || now.reference_field != was.reference_field
+                    || now.value_field != was.value_field
                     || now.orientation.map(|a| a.value_degrees) != was.orientation.map(|a| a.value_degrees)
             })
         })

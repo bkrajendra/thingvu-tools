@@ -17,6 +17,7 @@ pub mod declutter;
 pub mod edits;
 pub mod fab;
 pub mod footprint;
+pub mod footprint_edit;
 pub mod geometry;
 pub mod ids;
 pub mod layout;

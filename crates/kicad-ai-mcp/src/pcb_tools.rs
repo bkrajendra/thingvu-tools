@@ -10,7 +10,7 @@ use std::time::Duration;
 use kicad_domain::board::{place_rect, Board};
 use kicad_domain::board_edit::{self, BoardEditPlan, BoardOp, HolePlacement, MoveRequest, OutlineRequest};
 use kicad_domain::placement::{self, NearHint, PinnedPlace, PlaceHints, PlaceOptions};
-use kicad_domain::{routing, rules, track_edit, zones};
+use kicad_domain::{footprint_edit, routing, rules, track_edit, zones};
 use kicad_domain::{ErrorCode, Origin, Point, Provenance, Rect, ToolError};
 use kicad_session::{BoardSession, Provider};
 use rmcp::handler::server::wrapper::Parameters;
@@ -522,6 +522,80 @@ pub struct PcbAttributesArgs {
     /// Also mark every mounting hole as board only and left out of the BOM and the position file.
     #[serde(default)]
     pub mounting_holes: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PadEditArg {
+    /// The pad's number, e.g. "1". Every pad of the footprint with that number is changed.
+    pub number: String,
+    /// The hole's diameter, mm (a through-hole pad only). With drill_height_mm the hole is a slot.
+    #[serde(default)]
+    pub drill_mm: Option<f64>,
+    /// A slot's height, mm; needs drill_mm as its width.
+    #[serde(default)]
+    pub drill_height_mm: Option<f64>,
+    /// The copper's width and height before the pad is turned, mm (give both).
+    #[serde(default)]
+    pub width_mm: Option<f64>,
+    #[serde(default)]
+    pub height_mm: Option<f64>,
+    /// How a zone connects: inherited, none, thermal, full, or pth_thermal.
+    #[serde(default)]
+    pub zone_connection: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TextEditArg {
+    /// "reference" or "value".
+    pub field: String,
+    /// F.SilkS, B.SilkS, F.Fab, B.Fab, F.CrtYd, B.CrtYd, F.Adhes, B.Adhes, F.Cu, or B.Cu.
+    #[serde(default)]
+    pub layer: Option<String>,
+    /// Character height, mm (the width follows).
+    #[serde(default)]
+    pub height_mm: Option<f64>,
+    /// Stroke width, mm.
+    #[serde(default)]
+    pub thickness_mm: Option<f64>,
+    /// Absolute place on the board, mm (give both).
+    #[serde(default)]
+    pub x_mm: Option<f64>,
+    #[serde(default)]
+    pub y_mm: Option<f64>,
+    /// Or an offset from where it is, mm (one alone is fine; the other is 0).
+    #[serde(default)]
+    pub dx_mm: Option<f64>,
+    #[serde(default)]
+    pub dy_mm: Option<f64>,
+    /// Turn on the board, degrees counter-clockwise on screen.
+    #[serde(default)]
+    pub angle_deg: Option<f64>,
+    /// Show (true) or hide (false) it.
+    #[serde(default)]
+    pub visible: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FootprintEditArg {
+    /// The footprint's reference, e.g. J1.
+    pub reference: String,
+    #[serde(default)]
+    pub pads: Vec<PadEditArg>,
+    #[serde(default)]
+    pub texts: Vec<TextEditArg>,
+    /// Edit it although it is locked.
+    #[serde(default)]
+    pub allow_locked: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PcbFootprintEditArgs {
+    pub session_id: String,
+    pub footprints: Vec<FootprintEditArg>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1524,6 +1598,35 @@ Apply with pcb_apply_plan; the attributes are read back."
                 })
                 .collect();
             let plan = board_edit::plan_attributes(&data, &requests, args.mounting_holes)?;
+            Ok::<_, ToolError>((plan, fingerprint(&data)))
+        }
+        .await;
+        match result {
+            Ok((plan, fp)) => self.store_edit_plan(&cid, &board, plan, fp).await,
+            Err(e) => envelope::error(&cid, &e),
+        }
+    }
+
+    #[tool(
+        name = "pcb_footprint_edit_plan",
+        description = "Plan changing a placed footprint's pads and text without touching the library: a pad's hole \n(drill_mm, or a slot with drill_height_mm), copper size (width_mm and height_mm), and zone connection \n(inherited, none, thermal, full, pth_thermal); and the reference or value text's layer (silkscreen, fab, \ncourtyard), height, stroke, place (x_mm and y_mm, or dx_mm and dy_mm from where it is), turn, and visibility. \nA pad is named by number and every pad with that number changes. The plan refuses a hole on a surface-mount \npad, a hole as large as the copper, and unequal sides on a round pad, and warns about a thin annular ring, \nsilkscreen too small to print, and text on the other side from its part. Footprints are not moved (use \npcb_move_plan) and nets are not changed. Needs a live KiCad 11 session. Apply with pcb_apply_plan: one change \n(one undo step in the editor), zones refilled, every pad and text read back, DRC before and after (a worse DRC \nrolls the change back)."
+    )]
+    pub async fn pcb_footprint_edit_plan(&self, Parameters(args): Parameters<PcbFootprintEditArgs>) -> CallToolResult {
+        let cid = envelope::correlation_id();
+        let board = match self.board(&args.session_id).await {
+            Ok(b) => b,
+            Err(e) => return envelope::error(&cid, &e),
+        };
+        let result = async {
+            refuse_unless_live(&board)?;
+            let data = board.read().await?;
+            let detail = board.read_detail().await?;
+            let requests = args
+                .footprints
+                .iter()
+                .map(footprint_edit_request)
+                .collect::<Result<Vec<_>, ToolError>>()?;
+            let plan = footprint_edit::plan_footprint_edits(&data, &detail, &requests)?;
             Ok::<_, ToolError>((plan, fingerprint(&data)))
         }
         .await;
@@ -2624,7 +2727,7 @@ fn footprint_detail_json(d: &kicad_domain::board_detail::FootprintDetail) -> ser
             "angle_deg": round2(p.angle_deg),
             "size": p.size.map(|(w, h)| serde_json::json!({ "x": mm(w.0), "y": mm(h.0) })),
             "drill": p.drill.map(|(w, h)| serde_json::json!({ "x": mm(w.0), "y": mm(h.0) })),
-            "corner_ratio": p.corner_ratio, "layers": p.layers, "net": p.net,
+            "corner_ratio": p.corner_ratio, "layers": p.layers, "net": p.net, "zone_connection": p.zone_connection,
         })).collect::<Vec<_>>(),
         "courtyard": d.courtyard.iter().map(shape_detail_json).collect::<Vec<_>>(),
         "texts": d.texts.iter().map(text_detail_json).collect::<Vec<_>>(),
@@ -3078,6 +3181,67 @@ fn move_request(m: &MoveArg) -> Result<MoveRequest, ToolError> {
     })
 }
 
+fn footprint_edit_request(arg: &FootprintEditArg) -> Result<footprint_edit::FootprintEditRequest, ToolError> {
+    let who = |what: &str| format!("{}: {what}", arg.reference);
+    let pair = |x: Option<f64>, y: Option<f64>, what: &str| match (x, y) {
+        (Some(x), Some(y)) => point_arg(x, y).map(Some),
+        (None, None) => Ok(None),
+        _ => Err(bad_arg(who(&format!("give both {what}")))),
+    };
+    let size = |w: Option<f64>, h: Option<f64>, name: &str| match (w, h) {
+        (Some(w), Some(h)) => {
+            if !(0.05..=50.0).contains(&w) || !(0.05..=50.0).contains(&h) {
+                return Err(bad_arg(who(&format!("{name} is 0.05 to 50 mm"))));
+            }
+            Ok(Some((nm_arg(name, w)?, nm_arg(name, h)?)))
+        }
+        (None, None) => Ok(None),
+        _ => Err(bad_arg(who("give width_mm and height_mm together"))),
+    };
+    let mut pads = Vec::new();
+    for p in &arg.pads {
+        let drill = match (p.drill_mm, p.drill_height_mm) {
+            (None, None) => None,
+            (None, Some(_)) => return Err(bad_arg(who("drill_height_mm needs drill_mm"))),
+            (Some(w), h) => size(Some(w), Some(h.unwrap_or(w)), "drill_mm")?,
+        };
+        pads.push(footprint_edit::PadEdit {
+            number: p.number.clone(),
+            drill,
+            size: size(p.width_mm, p.height_mm, "width_mm and height_mm")?,
+            zone_connection: p.zone_connection.clone(),
+        });
+    }
+    let mut texts = Vec::new();
+    for t in &arg.texts {
+        let angle = match t.angle_deg {
+            Some(d) if !d.is_finite() || d.abs() > 3600.0 => {
+                return Err(bad_arg(who("angle_deg is a turn in degrees")))
+            }
+            other => other,
+        };
+        texts.push(footprint_edit::TextEdit {
+            field: t.field.clone(),
+            layer: t.layer.clone(),
+            height: t.height_mm.map(|v| nm_arg("height_mm", v)).transpose()?,
+            thickness: t.thickness_mm.map(|v| nm_arg("thickness_mm", v)).transpose()?,
+            at: pair(t.x_mm, t.y_mm, "x_mm and y_mm")?,
+            offset: match (t.dx_mm, t.dy_mm) {
+                (None, None) => None,
+                (dx, dy) => Some(point_arg(dx.unwrap_or(0.0), dy.unwrap_or(0.0))?),
+            },
+            angle_deg: angle,
+            visible: t.visible,
+        });
+    }
+    Ok(footprint_edit::FootprintEditRequest {
+        reference: arg.reference.clone(),
+        pads,
+        texts,
+        allow_locked: arg.allow_locked,
+    })
+}
+
 fn placement_json(p: &board_edit::Placement) -> serde_json::Value {
     serde_json::json!({ "at": pt(p.at), "rotation_deg": round2(p.rotation_deg), "side": if p.back { "back" } else { "front" } })
 }
@@ -3155,6 +3319,48 @@ fn op_json(op: &BoardOp) -> serde_json::Value {
         BoardOp::SetAttributes {
             reference, from, to, ..
         } => serde_json::json!({ "op": "set_attributes", "reference": reference, "from": from, "to": to }),
+        BoardOp::EditPad {
+            reference,
+            number,
+            count,
+            from,
+            set,
+            ..
+        } => {
+            let values = |v: &footprint_edit::PadValues| {
+                serde_json::json!({
+                    "drill": v.drill.map(|(w, h)| if w == h {
+                        serde_json::json!(mm(w.0))
+                    } else {
+                        serde_json::json!({ "width": mm(w.0), "height": mm(h.0) })
+                    }),
+                    "copper": v.size.map(|(w, h)| serde_json::json!({ "width": mm(w.0), "height": mm(h.0) })),
+                    "zone_connection": v.zone_connection,
+                })
+            };
+            serde_json::json!({
+                "op": "edit_pad", "reference": reference, "pad": number, "pads_with_number": count,
+                "from": values(from), "set": values(set),
+            })
+        }
+        BoardOp::EditText {
+            reference,
+            field,
+            from,
+            to,
+            ..
+        } => {
+            let values = |v: &footprint_edit::TextValues| {
+                serde_json::json!({
+                    "layer": v.layer, "height": mm(v.height.0), "thickness": mm(v.thickness.0), "at": pt(v.at),
+                    "angle_deg": round2(v.angle_deg), "visible": v.visible,
+                })
+            };
+            serde_json::json!({
+                "op": "edit_text", "reference": reference, "field": field.to_lowercase(),
+                "from": values(from), "to": values(to),
+            })
+        }
         BoardOp::MoveFootprint {
             reference,
             from,
@@ -3298,6 +3504,15 @@ impl KicadAiServer {
             p.applied_with = Some(args.idempotency_key.clone());
         }
         let mut problems = board_edit::verify_edit(plan, &after);
+        if plan.kind == "footprint" {
+            match board.read_detail().await {
+                Ok(detail) => problems.extend(footprint_edit::verify(&plan.operations, &detail)),
+                Err(e) => problems.push(format!(
+                    "the footprints' pads and text could not be read back: {}",
+                    e.message
+                )),
+            }
+        }
         let drc = match (&drc_before, &drc_after) {
             (Some(b), Some(a)) => {
                 problems.extend(drc_worse(b, a));

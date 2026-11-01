@@ -143,6 +143,26 @@ pub enum BoardOp {
         from: FootprintFlags,
         to: FootprintFlags,
     },
+    /// The pads numbered `number` on a footprint given another hole, copper size, or zone
+    /// connection (Phase 15.2); `from` is how the first of them is now.
+    EditPad {
+        reference: String,
+        id: String,
+        number: String,
+        /// How many pads carry the number.
+        count: usize,
+        from: crate::footprint_edit::PadValues,
+        set: crate::footprint_edit::PadValues,
+    },
+    /// A footprint's reference or value text given another layer, size, place, turn, or visibility.
+    EditText {
+        reference: String,
+        id: String,
+        /// `Reference` or `Value`.
+        field: &'static str,
+        from: crate::footprint_edit::TextValues,
+        to: crate::footprint_edit::TextValues,
+    },
     /// A footprint moved, turned, or flipped, and its lock set.
     MoveFootprint {
         reference: String,
@@ -163,7 +183,7 @@ pub struct LayoutMeasure {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BoardEditPlan {
-    /// `outline` or `move`.
+    /// `outline`, `move`, `attributes`, `footprint`, ...
     pub kind: &'static str,
     pub operations: Vec<BoardOp>,
     pub before: LayoutMeasure,
@@ -1014,6 +1034,8 @@ pub fn verify_edit(plan: &BoardEditPlan, after: &Board) -> Vec<String> {
                     ));
                 }
             }
+            // Pads and text are compared on the board's full geometry (`footprint_edit::verify`).
+            BoardOp::EditPad { .. } | BoardOp::EditText { .. } => {}
             BoardOp::SetAttributes { reference, to, .. } => match by_ref.get(reference.as_str()) {
                 Some(f) if FootprintFlags::of(f) == *to => {}
                 Some(f) => problems.push(format!(

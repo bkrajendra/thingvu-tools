@@ -25,6 +25,8 @@ pub struct PadDetail {
     pub corner_ratio: Option<f64>,
     pub layers: Vec<String>,
     pub net: String,
+    /// How a zone connects to the pad: `inherited`, `none`, `thermal`, `full`, or `pth_thermal`.
+    pub zone_connection: String,
 }
 
 /// A piece of text: a footprint's reference, value, or other field, or free text.

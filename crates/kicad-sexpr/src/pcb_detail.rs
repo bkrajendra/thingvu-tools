@@ -209,6 +209,15 @@ pub fn read_detail(source: &str) -> Result<BoardDetail, BoardError> {
                                 corner_ratio: child.child_f64("roundrect_rratio"),
                                 layers,
                                 net: net_of(child, &table),
+                                // `(zone_connect n)`: inherited when the pad does not say.
+                                zone_connection: match child.child_f64("zone_connect") {
+                                    Some(0.0) => "none",
+                                    Some(1.0) => "thermal",
+                                    Some(2.0) => "full",
+                                    Some(3.0) => "pth_thermal",
+                                    _ => "inherited",
+                                }
+                                .to_owned(),
                             });
                         }
                         Some(head) => {
@@ -258,7 +267,7 @@ mod tests {
 		(fp_line (start -1 -1) (end 1 -1) (stroke (width 0.12) (type solid)) (layer "F.SilkS") (uuid "s1"))
 		(fp_rect (start -1.5 -0.8) (end 1.5 0.8) (stroke (width 0.05) (type solid)) (fill no) (layer "F.CrtYd") (uuid "c1"))
 		(pad "1" smd roundrect (at -0.8 0 90) (size 0.9 0.95) (layers "F.Cu" "F.Paste" "F.Mask") (roundrect_rratio 0.25) (net 1 "GND") (uuid "d1"))
-		(pad "2" thru_hole oval (at 0.8 0) (size 1.6 2.4) (drill oval 0.9 1.7) (layers "*.Cu" "*.Mask") (uuid "d2"))
+		(pad "2" thru_hole oval (at 0.8 0) (size 1.6 2.4) (drill oval 0.9 1.7) (zone_connect 2) (layers "*.Cu" "*.Mask") (uuid "d2"))
 	)
 )"#;
 
@@ -280,6 +289,10 @@ mod tests {
         let p2 = &r1.pads[1];
         assert_eq!(p2.drill, Some((nm(0.9), nm(1.7))));
         assert_eq!(p2.layers, ["F.Cu", "B.Cu"]);
+        assert_eq!(
+            (p1.zone_connection.as_str(), p2.zone_connection.as_str()),
+            ("inherited", "full")
+        );
         assert_eq!(r1.courtyard.len(), 1);
         assert_eq!(r1.courtyard[0].kind, "rect");
         let b = r1.courtyard[0].bounds().unwrap();

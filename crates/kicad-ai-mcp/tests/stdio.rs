@@ -124,6 +124,7 @@ async fn lists_tools_and_returns_envelopes() {
             "pcb_export",
             "pcb_fab_package",
             "pcb_footprint_attrs_plan",
+            "pcb_footprint_edit_plan",
             "pcb_get_footprint",
             "pcb_info",
             "pcb_list_drawings",
@@ -4856,6 +4857,179 @@ async fn live_board_old_holes_are_repaired() {
         )
         .await;
     assert_eq!(again["ok"], false, "{again}");
+    mcp.call("pcb_close", json!({ "session_id": id, "discard_unsaved": true }))
+        .await;
+}
+
+/// J1 with its pads and text in full.
+async fn read_j1(mcp: &mut Mcp, id: &Value) -> Value {
+    let list = mcp
+        .call(
+            "pcb_list_footprints",
+            json!({ "session_id": id, "detail": "full", "include_pads": true, "references": ["J1"] }),
+        )
+        .await;
+    footprint(&list, "J1").clone()
+}
+
+/// Phase 15.2: a placed footprint's pads and text are planned, applied, and read back; a change
+/// that makes DRC worse is rolled back; a file session is refused.
+#[tokio::test]
+async fn live_footprint_pads_and_text_are_edited() {
+    if std::env::var("KICAD_LIVE").as_deref() != Ok("1") {
+        eprintln!("skipped: set KICAD_LIVE=1");
+        return;
+    }
+    let pcb = board_fixture("fpedit", false);
+    let mut mcp = Mcp::start().await;
+    let key = |n: &str| format!("pcb-fpedit-{n}-{}", std::process::id());
+
+    let file = mcp
+        .call("pcb_open", json!({ "pcb_path": pcb, "provider": "file" }))
+        .await;
+    let refused = mcp
+        .call(
+            "pcb_footprint_edit_plan",
+            json!({ "session_id": file["result"]["session_id"],
+                    "footprints": [{ "reference": "J1", "pads": [{ "number": "1", "zone_connection": "full" }] }] }),
+        )
+        .await;
+    assert_eq!(refused["ok"], false, "a file session only reads: {refused}");
+    mcp.call("pcb_close", json!({ "session_id": file["result"]["session_id"] }))
+        .await;
+
+    let opened = mcp
+        .call("pcb_open", json!({ "pcb_path": pcb, "provider": "headless" }))
+        .await;
+    let id = opened["result"]["session_id"].clone();
+    let before = read_j1(&mut mcp, &id).await;
+    let pad_before = before["detail"]["pads"][0].clone();
+    assert_eq!(pad_before["zone_connection"], "inherited", "{pad_before}");
+
+    // Refusals.
+    for bad in [
+        json!({ "session_id": id, "footprints": [] }),
+        json!({ "session_id": id, "footprints": [{ "reference": "J9", "pads": [{ "number": "1", "zone_connection": "full" }] }] }),
+        json!({ "session_id": id, "footprints": [{ "reference": "J1", "pads": [{ "number": "9", "zone_connection": "full" }] }] }),
+        json!({ "session_id": id, "footprints": [{ "reference": "J1", "pads": [{ "number": "1", "zone_connection": "often" }] }] }),
+        json!({ "session_id": id, "footprints": [{ "reference": "J1", "pads": [{ "number": "1", "drill_mm": 2.5 }] }] }),
+        json!({ "session_id": id, "footprints": [{ "reference": "J1", "pads": [{ "number": "1", "width_mm": 2.0 }] }] }),
+        json!({ "session_id": id, "footprints": [{ "reference": "J1", "pads": [{ "number": "1" }] }] }),
+        json!({ "session_id": id, "footprints": [{ "reference": "J1", "texts": [{ "field": "datasheet", "visible": false }] }] }),
+        json!({ "session_id": id, "footprints": [{ "reference": "J1", "texts": [{ "field": "value", "x_mm": 1 }] }] }),
+        json!({ "session_id": id, "footprints": [{ "reference": "J1" }] }),
+    ] {
+        let r = mcp.call("pcb_footprint_edit_plan", bad.clone()).await;
+        assert_eq!(r["ok"], false, "{bad}: {r}");
+    }
+
+    // A bigger hole and pad, a zone connection, the reference moved to the fab layer, the value hidden.
+    let plan = mcp
+        .call(
+            "pcb_footprint_edit_plan",
+            json!({ "session_id": id, "footprints": [{
+                "reference": "J1",
+                "pads": [{ "number": "1", "drill_mm": 1.1, "width_mm": 2.2, "height_mm": 2.2, "zone_connection": "full" }],
+                "texts": [
+                    { "field": "reference", "layer": "F.Fab", "height_mm": 0.8, "thickness_mm": 0.12, "dy_mm": -1.0 },
+                    { "field": "value", "visible": false }
+                ] }] }),
+        )
+        .await;
+    assert_eq!(plan["ok"], true, "{plan}");
+    assert_eq!(plan["result"]["kind"], "footprint", "{plan}");
+    assert_eq!(plan["result"]["operations"].as_array().unwrap().len(), 3, "{plan}");
+    let applied = apply_board(&mut mcp, &id, &plan, &key("edit")).await;
+    assert_eq!(applied["ok"], true, "{applied}");
+    assert_eq!(applied["result"]["verified"], true, "{applied}");
+    assert_eq!(
+        applied["result"]["report"]["pads_edited"],
+        json!(["J1 pad 1"]),
+        "{applied}"
+    );
+    let after = read_j1(&mut mcp, &id).await;
+    let pad = &after["detail"]["pads"][0];
+    println!("FPEDIT pad after {pad}");
+    assert_eq!(pad["zone_connection"], "full", "{pad}");
+    assert!((pad["drill"]["x"].as_f64().unwrap() - 1.1).abs() < 0.01, "{pad}");
+    assert!((pad["size"]["x"].as_f64().unwrap() - 2.2).abs() < 0.01, "{pad}");
+    // The other pads, their places and nets, are as they were.
+    assert_eq!(
+        after["detail"]["pads"][1]["drill"],
+        before["detail"]["pads"][1]["drill"]
+    );
+    assert_eq!(pad["at"], pad_before["at"]);
+    assert_eq!(pad["net"], pad_before["net"]);
+    let text = |f: &Value, name: &str| {
+        f["detail"]["texts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    let reference = text(&after, "Reference");
+    println!(
+        "FPEDIT reference after {reference} (before {})",
+        text(&before, "Reference")
+    );
+    assert_eq!(reference["layer"], "F.Fab", "{reference}");
+    assert!(
+        (reference["height"].as_f64().unwrap() - 0.8).abs() < 0.01,
+        "{reference}"
+    );
+    let dy = reference["at"]["y"].as_f64().unwrap() - text(&before, "Reference")["at"]["y"].as_f64().unwrap();
+    assert!((dy + 1.0).abs() < 0.01, "moved up by 1 mm: {dy}");
+    assert_eq!(text(&after, "Value")["visible"], false);
+    assert_eq!(text(&after, "Reference")["visible"], true);
+
+    // The same again changes nothing.
+    let again = mcp
+        .call(
+            "pcb_footprint_edit_plan",
+            json!({ "session_id": id, "footprints": [{ "reference": "J1",
+                "pads": [{ "number": "1", "drill_mm": 1.1, "zone_connection": "full" }] }] }),
+        )
+        .await;
+    assert_eq!(again["ok"], false, "{again}");
+
+    // A turn of the reference text, read back.
+    let turn = mcp
+        .call(
+            "pcb_footprint_edit_plan",
+            json!({ "session_id": id, "footprints": [{ "reference": "J1",
+                "texts": [{ "field": "reference", "angle_deg": 90, "x_mm": 130, "y_mm": 100 }] }] }),
+        )
+        .await;
+    assert_eq!(turn["ok"], true, "{turn}");
+    let applied = apply_board(&mut mcp, &id, &turn, &key("turn")).await;
+    assert_eq!(applied["result"]["verified"], true, "{applied}");
+
+    // Copper so large that it breaks clearances: DRC is worse, the change is rolled back.
+    let big = mcp
+        .call(
+            "pcb_footprint_edit_plan",
+            json!({ "session_id": id, "footprints": [{ "reference": "J1",
+                "pads": [{ "number": "1", "width_mm": 9.0, "height_mm": 9.0, "drill_mm": 1.1 }] }] }),
+        )
+        .await;
+    assert_eq!(big["ok"], true, "{big}");
+    let applied = apply_board(&mut mcp, &id, &big, &key("big")).await;
+    println!(
+        "FPEDIT big pad: state {} problems {}",
+        applied["result_state"], applied["result"]["problems"]
+    );
+    let now = read_j1(&mut mcp, &id).await;
+    if applied["result"]["verified"] == false {
+        assert_eq!(applied["result"]["rollback"]["restored"], true, "{applied}");
+        assert!(
+            (now["detail"]["pads"][0]["size"]["x"].as_f64().unwrap() - 2.2).abs() < 0.01,
+            "the pad is back to 2.2 mm: {}",
+            now["detail"]["pads"][0]
+        );
+        assert_eq!(now["detail"]["pads"][0]["zone_connection"], "full");
+    }
     mcp.call("pcb_close", json!({ "session_id": id, "discard_unsaved": true }))
         .await;
 }

@@ -267,7 +267,7 @@ flowchart LR
     SCH["Schematic file<br/>next to the board"] -->|"netlist export"| PLAN["pcb_update_from_schematic_plan<br/>ImportNetlist dry run"]
     PLAN --> APPLY["pcb_apply_plan<br/>real import, read back,<br/>every pad net checked"]
     APPLY --> LIVE
-    MODEL --> EDIT["pcb_outline_plan, pcb_move_plan,<br/>pcb_footprint_attrs_plan,<br/>pcb_track_edit_plan<br/>pcb_rules_plan (rules.rs)<br/>board_edit: operations +<br/>expected board, measured"]
+    MODEL --> EDIT["pcb_outline_plan, pcb_move_plan,<br/>pcb_footprint_attrs_plan,<br/>pcb_footprint_edit_plan<br/>(footprint_edit.rs),<br/>pcb_track_edit_plan<br/>pcb_rules_plan (rules.rs)<br/>board_edit: operations +<br/>expected board, measured"]
     MODEL --> PLACE["pcb_place_plan<br/>placement: constructive pass,<br/>improvement loop, one cost"]
     SCH -->|"boxes drawn<br/>around parts"| PLACE
     PLACE -->|"move plan"| APPLYE
