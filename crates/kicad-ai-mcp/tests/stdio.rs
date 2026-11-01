@@ -13,6 +13,8 @@ struct Mcp {
     stdin: ChildStdin,
     stdout: Lines<BufReader<ChildStdout>>,
     next_id: u64,
+    /// The server's own account of what its tools are for, from `initialize`.
+    instructions: String,
 }
 
 impl Mcp {
@@ -36,6 +38,7 @@ impl Mcp {
             stdin,
             stdout,
             next_id: 1,
+            instructions: String::new(),
         };
         let init = mcp
             .request(
@@ -48,6 +51,7 @@ impl Mcp {
             )
             .await;
         assert_eq!(init["result"]["serverInfo"]["name"], "kicad-ai-mcp", "{init}");
+        mcp.instructions = init["result"]["instructions"].as_str().unwrap_or_default().to_owned();
         mcp.send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
             .await;
         mcp
@@ -172,6 +176,52 @@ async fn lists_tools_and_returns_envelopes() {
             "sym_get",
             "sym_search"
         ]
+    );
+
+    // The instructions say which tool to use for which job: every tool they name exists, and the
+    // tools that were hard to find in the ESP32-S3 session (and every plan tool) are named.
+    let named: std::collections::BTreeSet<&str> = mcp
+        .instructions
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| {
+            ["pcb_", "sch_", "sym_", "fp_", "bom_", "checkpoint_", "session_"]
+                .iter()
+                .any(|p| w.starts_with(p))
+        })
+        .collect();
+    for n in &named {
+        assert!(
+            names.iter().any(|t| t == n),
+            "the instructions name '{n}', which is not a tool"
+        );
+    }
+    for important in [
+        "pcb_route_plan",
+        "pcb_autoroute_plan",
+        "pcb_track_edit_plan",
+        "pcb_rules_plan",
+        "sch_set_fields_plan",
+        "sch_pin_net_plan",
+        "bom_review",
+        "pcb_fab_package",
+        "pcb_reload",
+        "checkpoint_restore",
+        "sym_search",
+    ] {
+        assert!(named.contains(important), "the instructions do not mention {important}");
+    }
+    for n in names.iter().filter(|n| n.ends_with("_plan")) {
+        assert!(
+            named.contains(n.as_str()),
+            "the plan tool {n} is not in the instructions"
+        );
+    }
+    let described = tools["result"]["tools"].as_array().unwrap();
+    assert!(
+        described
+            .iter()
+            .all(|t| t["description"].as_str().is_some_and(|d| d.len() > 40)),
+        "every tool has a description that says what it is for"
     );
 
     let status = mcp.call("session_status", json!({})).await;
@@ -4931,4 +4981,196 @@ async fn live_board_is_exported() {
     let report: Value =
         serde_json::from_str(&std::fs::read_to_string(fab.join("regulator-checks.json")).unwrap()).unwrap();
     assert_eq!(report["accepted_by_user"], Value::Null);
+}
+
+/// Phase 14.9: the steps of the ESP32-S3 session that were once done by editing `.kicad_*` files,
+/// each done with a tool on one project: part data in the schematic, the board brought in from it,
+/// net classes, routes (one locked), a checkpoint, a rip-up that spares the locked track, the diff,
+/// a restore, and DRC. The test opens no project file itself.
+#[tokio::test]
+async fn live_the_file_edit_steps_of_a_real_session_are_tool_calls() {
+    if std::env::var("KICAD_LIVE").as_deref() != Ok("1") {
+        eprintln!("skipped: set KICAD_LIVE=1");
+        return;
+    }
+    let pcb = board_fixture("replay", true);
+    let schematic = pcb.with_extension("kicad_sch");
+    let mut mcp = Mcp::start().await;
+    let key = |n: &str| format!("replay-{n}-{}", std::process::id());
+
+    // 1. Schematic: what the order still needs, recorded as fields; ends saved.
+    let sch = mcp
+        .call(
+            "session_open",
+            json!({ "schematic_path": schematic, "provider": "headless" }),
+        )
+        .await;
+    assert_eq!(sch["ok"], true, "{sch}");
+    let sid = sch["result"]["session_id"].clone();
+    let review = mcp.call("bom_review", json!({ "session_id": sid })).await;
+    assert!(
+        review["result"]["issues"].to_string().contains("MISSING_MPN"),
+        "{review}"
+    );
+    let plan = mcp
+        .call(
+            "sch_set_fields_plan",
+            json!({ "session_id": sid, "edits": [
+                { "reference": "C1", "fields": { "MPN": "GRM21BR61A106KE19", "Manufacturer": "Murata" } },
+                { "reference": "R3", "fields": { "DNP": "yes" } },
+            ] }),
+        )
+        .await;
+    assert_eq!(plan["result"]["can_apply"], true, "{plan}");
+    let applied = mcp
+        .call(
+            "sch_apply_plan",
+            json!({ "session_id": sid, "plan_id": plan["result"]["plan_id"], "confirm": true, "idempotency_key": key("fields") }),
+        )
+        .await;
+    assert_eq!(applied["result"]["verified"], true, "{applied}");
+    assert_eq!(mcp.call("sch_save", json!({ "session_id": sid })).await["ok"], true);
+    let found = mcp.call("sym_search", json!({ "query": "ldo 3.3v", "limit": 3 })).await;
+    assert_eq!(found["ok"], true, "{found}");
+    mcp.call("session_close", json!({ "session_id": sid })).await;
+
+    // 2. Board: brought in from the schematic, outlined, placed.
+    let opened = mcp
+        .call("pcb_open", json!({ "pcb_path": pcb, "provider": "headless" }))
+        .await;
+    assert_eq!(opened["ok"], true, "{opened}");
+    let id = opened["result"]["session_id"].clone();
+    let update = mcp
+        .call("pcb_update_from_schematic_plan", json!({ "session_id": id }))
+        .await;
+    assert_eq!(update["result"]["can_apply"], true, "{update}");
+    assert_eq!(
+        apply_board(&mut mcp, &id, &update, &key("update")).await["result"]["verified"],
+        true
+    );
+    let outline = mcp
+        .call(
+            "pcb_outline_plan",
+            json!({ "session_id": id, "width_mm": 36, "height_mm": 28, "origin": { "x_mm": 100, "y_mm": 80 } }),
+        )
+        .await;
+    assert_eq!(
+        apply_board(&mut mcp, &id, &outline, &key("outline")).await["result"]["verified"],
+        true
+    );
+    let place = mcp
+        .call(
+            "pcb_place_plan",
+            json!({ "session_id": id, "edge": [{ "reference": "J1", "edge": "left" }] }),
+        )
+        .await;
+    assert_eq!(
+        apply_board(&mut mcp, &id, &place, &key("place")).await["result"]["verified"],
+        true
+    );
+
+    // 3. Net classes, then tracks (the first locked).
+    let rules = mcp
+        .call(
+            "pcb_rules_plan",
+            json!({ "session_id": id,
+                    "net_classes": [{ "name": "Power", "track_width_mm": 0.5, "clearance_mm": 0.25 }],
+                    "assign": [{ "net": "GND", "class": "Power" }] }),
+        )
+        .await;
+    assert_eq!(rules["ok"], true, "{rules}");
+    assert_eq!(
+        apply_board(&mut mcp, &id, &rules, &key("rules")).await["result"]["verified"],
+        true
+    );
+    let nets = mcp.call("pcb_list_nets", json!({ "session_id": id })).await;
+    let mut routes = Vec::new();
+    for (_, net) in nets["result"]["nets"].as_object().unwrap() {
+        let pads = net["pads"].as_array().unwrap();
+        if pads.len() == 2 {
+            let route = json!({ "points": [{ "pad": pads[0] }, { "pad": pads[1] }] });
+            let one = mcp
+                .call("pcb_route_plan", json!({ "session_id": id, "routes": [route.clone()] }))
+                .await;
+            if one["ok"] == true {
+                routes.push(route);
+            }
+        }
+    }
+    assert!(routes.len() >= 2, "two simple routes are needed");
+    routes[0]["locked"] = json!(true);
+    let route = mcp
+        .call("pcb_route_plan", json!({ "session_id": id, "routes": routes }))
+        .await;
+    assert_eq!(
+        apply_board(&mut mcp, &id, &route, &key("route")).await["result"]["verified"],
+        true
+    );
+    assert_eq!(mcp.call("pcb_save", json!({ "session_id": id })).await["ok"], true);
+    let routed = mcp.call("pcb_list_tracks", json!({ "session_id": id })).await;
+    let tracks_before = routed["result"]["track_count"].as_u64().unwrap();
+    let locked_before = routed["result"]["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["locked"] == true)
+        .count();
+    assert!(locked_before >= 1 && (locked_before as u64) < tracks_before, "{routed}");
+
+    // 4. A rip-up with a copy taken first; the locked track stays.
+    let rip = mcp
+        .call(
+            "pcb_track_edit_plan",
+            json!({ "session_id": id, "action": "delete", "select": { "all": true } }),
+        )
+        .await;
+    assert_eq!(rip["ok"], true, "{rip}");
+    let applied = mcp
+        .call(
+            "pcb_apply_plan",
+            json!({ "session_id": id, "plan_id": rip["result"]["plan_id"], "confirm": true,
+                    "idempotency_key": key("rip"), "checkpoint": "before the rip-up" }),
+        )
+        .await;
+    assert_eq!(applied["result"]["verified"], true, "{applied}");
+    let after_rip = mcp.call("pcb_list_tracks", json!({ "session_id": id })).await;
+    assert_eq!(after_rip["result"]["track_count"], locked_before, "{after_rip}");
+
+    // 5. What changed since the copy, then back to it; the open session is reloaded.
+    let diff = mcp
+        .call("checkpoint_diff", json!({ "session_id": id, "checkpoint": "latest" }))
+        .await;
+    assert_eq!(diff["ok"], true, "{diff}");
+    assert_eq!(mcp.call("pcb_save", json!({ "session_id": id })).await["ok"], true);
+    let restored = mcp
+        .call(
+            "checkpoint_restore",
+            json!({ "session_id": id, "checkpoint": "latest", "confirm": true }),
+        )
+        .await;
+    assert_eq!(restored["ok"], true, "{restored}");
+    assert_eq!(
+        mcp.call("pcb_list_tracks", json!({ "session_id": id })).await["result"]["track_count"],
+        tracks_before,
+        "the tracks are back"
+    );
+    let reloaded = mcp.call("pcb_reload", json!({ "session_id": id })).await;
+    assert_eq!(reloaded["ok"], true, "{reloaded}");
+    let rules_now = mcp.call("pcb_rules", json!({ "session_id": id })).await;
+    assert!(
+        rules_now["result"]["net_classes"].to_string().contains("Power"),
+        "{rules_now}"
+    );
+
+    // 6. DRC says how many problems there are, without the list.
+    let drc = mcp
+        .call("pcb_run_drc", json!({ "session_id": id, "summary_only": true }))
+        .await;
+    assert_eq!(drc["ok"], true, "{drc}");
+    assert!(
+        pcb.parent().unwrap().join(".thingsvu").join("checkpoints").is_dir(),
+        "the copies are kept next to the project"
+    );
+    mcp.call("pcb_close", json!({ "session_id": id, "discard_unsaved": true }))
+        .await;
 }

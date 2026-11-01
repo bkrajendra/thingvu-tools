@@ -35,6 +35,7 @@ These need no capability of their own: `sch_review`, `sch_describe_layout`, `sch
 | Whole sheet read (wires, labels, junctions, notes) | ipc | ipc | project_file |
 | Netlist used for a tidy | ipc (includes power symbols and flags) | ipc | kicad_cli, plus power symbols and flags attached from the drawing |
 | Applying a tidy | Two commits; reloads the saved file if it fails, so unsaved changes must be saved first | Two commits (two undo steps); a failure after the first says how many undo steps to take | Verified copy, then atomic replace |
+| Circuit plans with `no_connects` and `power_flags` (`sch_plan_changes`) | ipc; each flag read back | ipc; not yet tried in the editor | Verified copy; each flag read back from the file |
 | `sch_set_field` | One commit | One commit (one undo step) | Verified copy, then atomic replace |
 
 ## Board sessions (Phase 11)
@@ -44,7 +45,7 @@ Board sessions (`pcb_open`) are separate from schematic sessions. They have no p
 | | Headless | GUI | File |
 |---|---|---|---|
 | Needs | KiCad 11 (or the 10.99 nightly) `kicad-cli` | KiCad 11 PCB editor with the plugin button pressed | any `kicad-cli` (KiCad 10 or 11) |
-| Read the board (`pcb_info`, `pcb_list_*`, `pcb_get_footprint`) | ipc | ipc | project_file (`kicad-sexpr`) |
+| Read the board (`pcb_info`, `pcb_list_*` including `pcb_list_drawings` and `detail: full` footprints, `pcb_get_footprint`, `pcb_rules`) | ipc | ipc | project_file (`kicad-sexpr`) |
 | DRC (`pcb_run_drc`) | kicad_cli on a snapshot | kicad_cli on a snapshot | kicad_cli on the file |
 | Render (`pcb_render`) | kicad_cli (KiCad 11 only) | kicad_cli (KiCad 11 only) | kicad_cli (KiCad 11 only) |
 | Review (`pcb_review`) | ipc + kicad_cli | ipc + kicad_cli | project_file + kicad_cli |
@@ -53,7 +54,7 @@ Board sessions (`pcb_open`) are separate from schematic sessions. They have no p
 | Reload and freshness (`pcb_reload`, `session_reload`, `file_changed_on_disk`) | `RevertDocument` and the file's time and size | the same; not yet tried in the editor | the file is read each time; `read_only` opens a locked file |
 | Outline, moves, placement, footprint attributes, routing, pours (`pcb_outline_plan`, `pcb_move_plan`, `pcb_footprint_attrs_plan`, `pcb_place_plan`, `pcb_route_plan`, `pcb_track_edit_plan`, `pcb_rules_plan`, `pcb_zone_plan`, `pcb_apply_plan`) | ipc, one commit; unsaved until `pcb_save` | ipc, one commit (one undo step); not yet tried live | not available (D3) |
 | Rollback of a board change that fails its checks | ipc (snapshot and restore, one commit) | ipc (one more undo step) | not applicable |
-| Autoroute (`pcb_autoroute_plan`, optional Freerouting) | kicad_cli export of a snapshot, Freerouting, ipc import | same; not yet tried live | not available |
+| Autoroute (`pcb_autoroute_plan`, optional Freerouting; `nets`, `exclude_nets`, `keep_existing`) | kicad_cli export of a snapshot, the DSN edited as text, Freerouting (its process tree ended at the time limit), ipc import | same; not yet tried live | not available |
 | Manufacturing outputs (`pcb_export`, `pcb_fab_package`) | kicad_cli on a snapshot; read back with `kicad-cli gerber info` | same; not yet tried live | kicad_cli on the file (read-back of Gerbers needs a KiCad 11 `kicad-cli`; not yet tried on a KiCad 10 board) |
 | Mechanical model (`pcb_mechanical_info`) | project_file (`kicad-sexpr`) on a snapshot | same | project_file |
 | Save (`pcb_save`) | ipc | ipc | not applicable |

@@ -682,7 +682,7 @@ next to the board (or output_dir): <board>-gerbers.zip (Gerbers and drill, the f
 board), <board>-bom.csv and <board>-cpl.csv (for assembly; preset jlcpcb uses JLCPCB's columns, generic \
 KiCad's), and <board>-fab.zip holding all of them with the checks report. The same checks as pcb_export come \
 first, with the same accept_problems rule. The schematic file on disk is used for the BOM (save it first). \
-Every file is read back before it is copied into the project. Nothing is uploaded."
+Every file is read back before it is copied into the project. Nothing is uploaded. Run bom_review first to find parts with no footprint or part number; use pcb_export when only one kind of file is wanted."
     )]
     pub async fn pcb_fab_package(&self, Parameters(args): Parameters<PcbFabPackageArgs>) -> CallToolResult {
         let cid = envelope::correlation_id();

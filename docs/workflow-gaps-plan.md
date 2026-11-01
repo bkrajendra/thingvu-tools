@@ -1,6 +1,6 @@
 # Plan: closing the gaps found in a full board session (Phases 14 to 16)
 
-Status: Phase 13b (v0.8.1) done on 31 Oct 2026; Phase 14 started the same day (14.0 API probe and 14.1 bug fixes and limits done, not yet released; the version stays 0.8.1 until 14.9); Phases 15 and 16 planned (written 27 Oct 2026, after v0.8.0). The task lists are in [tasks.md](tasks.md), Phases 13b and 14 to 16. This page holds the reasoning: what was missing, what already exists, what to build first, and the decisions that need the project owner's review.
+Status: Phase 13b (v0.8.1) done on 31 Oct 2026; Phase 14 (v0.9.0) done on 1 Nov 2026 (14.0 to 14.9: API probe, fixes, track edits, full geometry, reload, checkpoints, schematic gaps, autoroute control); Phases 15 and 16 planned (written 27 Oct 2026, after v0.8.0). The task lists are in [tasks.md](tasks.md), Phases 13b and 14 to 16. This page holds the reasoning: what was missing, what already exists, what to build first, and the decisions that need the project owner's review.
 
 ## Where this comes from
 

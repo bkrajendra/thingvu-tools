@@ -277,14 +277,35 @@ flowchart LR
     RULES --> ZONE
     ZONE -->|"zones; refill after<br/>the commit"| APPLYE
     LIVE -->|"snapshot"| DSN["kicad-cli pcb export<br/>specctra"]
-    DSN --> FR["Freerouting (optional,<br/>own process, no network)"]
-    FR -->|"session (.ses)"| AUTO["pcb_autoroute_plan<br/>summary per net"]
+    DSN -->|"nets to route, rip-up:<br/>text edits (dsn.rs)"| FR["Freerouting (optional,<br/>own process tree, no network)"]
+    FR -->|"session (.ses)"| AUTO["pcb_autoroute_plan<br/>summary per net,<br/>what really changes"]
     AUTO -->|"ImportSpecctraSession"| LIVE
     APPLYE -->|"every plan but a move"| DRCBA["DRC before and after<br/>unrouted count, no new errors"]
     DRCBA -->|"problems"| ROLL["Rollback<br/>snapshot restored,<br/>board read again"]
     EDIT --> APPLYE["pcb_apply_plan<br/>one commit: shapes, holes,<br/>flips, footprints moved<br/>with every item"]
     APPLYE --> LIVE
     APPLYE -->|"read back"| VERIFY["verify_edit<br/>outline, places, turns,<br/>sides, locks, pads, nets"]
+```
+
+### Working on a board you do not own alone (Phase 14)
+
+An editor, another program, or a version control checkout can change the files while a session is open, and a plan can delete things. Four pieces keep that safe, each reached by a tool, so no project file is edited by hand.
+
+- **Freshness.** Every session keeps the modified time and size of its file as it last read or saved it (`kicad-session::freshness`). `pcb_info` and `session_status` report `unsaved_changes` (the editor's own flag for a live session), `file_changed_on_disk`, and `read_only`. `pcb_reload` and `session_reload` read the file again (`RevertDocument` for a live session, which does read a file changed on disk; the file provider reads it at every call), and refuse while there are unsaved changes unless told to drop them, listing what would be lost.
+- **Checkpoints.** `checkpoint_create` copies the project's `.kicad_pcb`, `.kicad_sch`, and `.kicad_pro` (a live session's open documents are saved to a copy first) into `.thingsvu/checkpoints/<time>/` with a manifest of hashes. `checkpoint_diff` compares two of them, or one with the project now, in terms of parts, nets, tracks, zones, and rules (`kicad-domain::changes`), and `checkpoint_restore` writes them back through temporary files, after taking a checkpoint of the present, and reloads the sessions on the project. `pcb_apply_plan` can take one itself (`checkpoint`).
+- **Track and rule edits.** `pcb_track_edit_plan` (`kicad-domain::track_edit`) selects copper by net, layer, area, or id and deletes it, widens it, or locks it; locked copper is skipped and listed. `pcb_rules_plan` (`kicad-domain::rules`) changes net classes, assignments, and minimums through the API in a live session and through the `.kicad_pro` JSON, checked with `kicad-cli` DRC, in a file session. Both go through `pcb_apply_plan`, so they are read back and rolled back like any board change (the rollback also puts back tracks that were changed in place).
+- **Autorouting under control.** `pcb_autoroute_plan` edits the Specctra file as text (`kicad-sexpr::dsn`): a net given no pins is left alone, and with `keep_existing: false` the unlocked tracks of the routed nets are taken out of the wiring. The time limit ends the router and every process it started (`kicad-cli-runner`).
+
+```mermaid
+flowchart LR
+    SESSION["Board or schematic<br/>session"] --> FRESH["Freshness stamp<br/>file time + size,<br/>unsaved flag"]
+    FRESH -->|"file_changed_on_disk"| RELOAD["pcb_reload, session_reload<br/>RevertDocument or reread;<br/>unsaved work listed first"]
+    SESSION --> CKPT["checkpoint_create<br/>.thingsvu/checkpoints/<br/>files + hashes"]
+    CKPT --> CDIFF["checkpoint_diff<br/>parts, nets, tracks,<br/>zones, rules"]
+    CKPT --> CREST["checkpoint_restore<br/>checkpoint of now first,<br/>then write and reload"]
+    CREST --> RELOAD
+    PLAN["pcb_track_edit_plan<br/>pcb_rules_plan"] -->|"pcb_apply_plan<br/>checkpoint: label"| CKPT
+    PLAN --> SESSION
 ```
 
 ### Manufacturing outputs (Phase 13)

@@ -27,15 +27,36 @@ mod fab_tools;
 #[path = "pcb_tools.rs"]
 mod pcb_tools;
 
-const INSTRUCTIONS: &str = "KiCad schematic tools. Start with session_status to see the KiCad installs \
-and what each session can do, then session_open on a .kicad_sch file (or create: true for a new one). \
-Use the headless or gui provider with KiCad 11; with KiCad 10 (or a file no editor has open) use the \
-file provider, which edits the file itself and checks the result with kicad-cli before replacing it. \
-Every result has ok, result_state, and provenance; a check that could not run is reported as not_run, \
-never as passing. To change a schematic, describe the circuit as components and nets, call \
-sch_plan_changes, show the plan to the user, then call sch_apply_plan with confirm: true and a fresh \
-idempotency_key. sch_apply_plan reads connectivity back from KiCad and reports any mismatch. Save with \
-sch_save (a file session is saved whenever a plan is applied); check with sch_run_erc and sch_render. Close sessions with session_close when done.";
+const INSTRUCTIONS: &str =
+    "KiCad schematic and board tools. Start with session_status to see the KiCad installs and what each \
+session can do, then session_open (a .kicad_sch) or pcb_open (a .kicad_pcb), or create: true for a \
+new schematic. Use the headless or gui provider with KiCad 11; with KiCad 10 (or a file no editor \
+has open) use the file provider, which edits the file itself and checks the result with kicad-cli \
+before replacing it. Every result has ok, result_state, and provenance; a check that could not run \
+is reported as not_run, never as passing. Every change is a plan: a *_plan tool describes it, you \
+show it to the user, then sch_apply_plan or pcb_apply_plan (confirm: true, a fresh idempotency_key) \
+applies it in one step, reads the result back from KiCad, and reports any mismatch; pcb_apply_plan \
+can take a checkpoint first (checkpoint: label). Do not edit .kicad_* files by hand: there is a tool \
+for each step below. Schematic: sch_plan_changes (circuit as components and nets, with no_connects \
+and power_flags), sch_pin_net_plan (move or swap a pin's net), sch_reconnect_plan, sch_label_plan, \
+sch_draw_plan, sch_edit_items_plan, sch_tidy_plan, sch_arrange_plan, sch_declutter_plan; \
+sch_set_fields_plan sets Value, Footprint, MPN and other fields on many parts at once (sch_set_field \
+for one); sch_footprint_plan assigns footprints; sym_search and sym_get find symbols and their pins, \
+fp_search and fp_get find footprints; sch_run_erc and sch_render check the result. Board: \
+pcb_update_from_schematic_plan brings the schematic in; pcb_outline_plan, pcb_place_plan, \
+pcb_move_plan, pcb_footprint_attrs_plan (DNP, BOM, position-file flags), pcb_zone_plan; pcb_rules \
+and pcb_rules_plan read and change net classes, assignments, and minimums; pcb_route_plan draws the \
+tracks you name, pcb_autoroute_plan routes with Freerouting (whole board, chosen nets, or all but \
+some); pcb_track_edit_plan rips up, re-widths, locks, and unlocks tracks and vias that exist; \
+pcb_list_tracks, pcb_list_footprints (detail: full), pcb_list_drawings, and pcb_list_nets read the \
+board; pcb_run_drc, pcb_review, and pcb_render check it. Sessions and safety: pcb_info and \
+session_status say when the file changed on disk or the editor has unsaved changes; pcb_reload and \
+session_reload read the file again; checkpoint_create, checkpoint_diff, and checkpoint_restore keep \
+and restore copies of the project's files. To order a board: bom_review lists what the parts need \
+(footprints, values, MPN, supplier numbers), sch_set_fields_plan records the answers, bom_export \
+writes the BOM, and pcb_fab_package makes the Gerber, drill, BOM, and placement files for a board \
+house (pcb_export for a single kind of file). Save with sch_save or pcb_save (a file session is \
+saved whenever a plan is applied). Close sessions with session_close or pcb_close when done.";
 
 #[derive(Debug, Clone, Default)]
 pub struct Options {
@@ -1821,7 +1842,7 @@ you have, then record the answers with sch_set_fields_plan. Read-only."
         description = "Plan setting fields on parts, many at once: Value, Footprint, Datasheet, Description, \
 custom fields such as MPN, Manufacturer, LCSC (added hidden, so the drawing does not change), and the flags \
 DNP, Exclude from BOM, and Exclude from board (yes or no). The reference cannot be set here. Nothing \
-else changes and every net is checked unchanged after applying; each field is read back. Returns a plan_id."
+else changes and every net is checked unchanged after applying; each field is read back. Use it for the BOM's missing data after bom_review (MPN, Manufacturer, LCSC), for footprints on many parts (sch_footprint_plan suggests them), and for DNP flags; sch_set_field is for a single field. Returns a plan_id."
     )]
     pub async fn sch_set_fields_plan(&self, Parameters(args): Parameters<SetFieldsPlanArgs>) -> CallToolResult {
         let cid = envelope::correlation_id();

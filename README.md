@@ -241,7 +241,7 @@ What each can do in detail: [capability matrix](docs/capability-matrix.md).
 | `session_list_documents` | Documents open in the session's KiCad |
 | `sch_list_symbols` / `sch_get_symbol_pins` | Read parts and their pins, positions, and types |
 | `sch_get_netlist` | Connectivity as KiCad's netlister sees it |
-| `sch_plan_changes` | Turn a circuit (parts and nets) into an exact, reviewable plan. Changes nothing |
+| `sch_plan_changes` | Turn a circuit (parts and nets) into an exact, reviewable plan: parts with their fields, nets, `no_connects` on unused pins, and `power_flags` on nets a power input needs driven. Changes nothing |
 | `sch_apply_plan` | Apply a plan you confirmed (new circuit or tidy), verify it against KiCad, and report any difference |
 | `sch_review` | Look at an existing schematic: overlapping parts, wires through parts, and whether it can be tidied. Read-only |
 | `sch_tidy_plan` | Plan a cleaner layout for an existing schematic: parts re-laid out, old wires and labels replaced, nets kept identical. Optional hints: `keep`, `place`, `near`. Changes nothing until applied |
@@ -297,6 +297,10 @@ What each can do in detail: [capability matrix](docs/capability-matrix.md).
 | `FEATURE_UNAVAILABLE` for rendering | KiCad 10's `kicad-cli` cannot export PNG. Install KiCad 11 (or the 10.99 nightly) next to it |
 | "format version … is older" | Open and save the file once in KiCad 10, or run `kicad-cli sch upgrade <file>`, then try again |
 | A symbol is not found | Symbols come from the schematic itself, the project's `sym-lib-table`, and KiCad's standard libraries. Libraries only in your global library table are not read yet |
+| `file_changed_on_disk: true` in `pcb_info` or `session_status` | Something else changed the file after the session read it. Ask for a reload (`pcb_reload` or `session_reload`); with unsaved changes it lists what would be lost and waits for `discard_unsaved` |
+| `.thingsvu` folder in my project | The checkpoints (`checkpoint_create`, and any plan applied with `checkpoint`). They are plain folders you can delete; add `.thingsvu/` to `.gitignore` if the project is under version control |
+| `KICAD_BUSY` | KiCad did not answer in time (the first netlist import or a big refill can be slow). Ask again; nothing was changed (`mutation_state` says so) |
+| Autorouting does not finish | The time limit ends the router and everything it started and says so; give a longer `time_limit_s` or fewer `passes`, or route only some nets (`nets`) |
 | Windows SmartScreen warning | The binaries are not code-signed yet. Compare the file's SHA-256 with `SHA256SUMS.txt` on the release page |
 | Something else | Logs are in `%LOCALAPPDATA%\thingsvu\kicad-ai\logs` (the last 7 days). Run `kicad-ai-mcp --help` for options |
 
@@ -348,8 +352,8 @@ How releases are made: [releasing](docs/releasing.md).
 - **Now (also):** reading, DRC, rendering, and reviewing boards, and updating a board from its schematic
 - **Now (also):** board outline, placement, routing, pours, and autorouting (optional, with Freerouting)
 - **Now (also):** manufacturing outputs (Gerbers, drill, BOM and placement files, STEP) with checks before export, and a mechanical summary of the board
-- **In progress (Phase 14, not released yet):** done so far: the planned part's custom fields are written, DRC results are summaries with only the new violations after a change, zones are refilled before DRC, autorouting keeps the minimum track width and removes dangling vias, circuit plans and the tidy take 150 parts, and the tidy keeps no-connect flags. Next: track editing, design rules, session reload, checkpoints.
-- **Next (Phase 13b fixes, then Phases 14 to 16, see [docs/workflow-gaps-plan.md](docs/workflow-gaps-plan.md)):** text that follows turned parts, a repair for older mounting holes, track editing and rip-up, net classes and design rules, reloading and checkpoints, schematic no-connects and pin swaps, footprint and silkscreen edits, stitching and connectivity checks
+- **Now (also):** editing the board without touching files: ripping up, re-widening, and locking tracks, net classes and design rules, full footprint geometry, reloading a board or schematic that changed on disk, checkpoints you can diff and restore, no-connect flags, power flags, pin swaps, and symbol search, and control over what the autorouter routes and keeps
+- **Next (Phases 15 and 16, see [docs/workflow-gaps-plan.md](docs/workflow-gaps-plan.md)):** page size and title block, footprint edits and updates from the library, silkscreen checks, stitching vias and connectivity checks, copper pours on both layers
 - **Also open:** hierarchical schematics
 - **Later:** 3D enclosure design driven from your PCB, so the whole embedded product comes together in one workflow
 

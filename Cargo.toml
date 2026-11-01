@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/kicad-ai-mcp", "crates/kicad-ai-plugin", "crates/kicad-cli-runner", "crates/kicad-domain", "crates/kicad-ipc", "crates/kicad-ipc-mock", "crates/kicad-session", "crates/kicad-sexpr", "crates/kicad-fault-tests", "crates/mech-model"]
 
 [workspace.package]
-version = "0.8.1"
+version = "0.9.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/bkrajendra/thingsvu-tools"
