@@ -57,6 +57,10 @@ if ($Clients -contains 'ClaudeCode' -and (Get-Command claude -ErrorAction Silent
         $null = Invoke-Native 'claude' @('mcp', 'remove', 'kicad-ai', '--scope', 'user')
         Write-Host 'Claude Code: removed "kicad-ai" (if it was there).'
     }
+    if (Ask 'Also remove the pcbparts parts-lookup MCP from Claude Code (skip this if you use it for other things)?') {
+        $null = Invoke-Native 'claude' @('mcp', 'remove', 'pcbparts', '--scope', 'user')
+        Write-Host 'Claude Code: removed "pcbparts" (if it was there).'
+    }
 }
 if ($Clients -contains 'ClaudeDesktop' -and (Test-Path $ClaudeDesktopConfig)) {
     $cfg = $null

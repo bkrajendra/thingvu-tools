@@ -265,6 +265,9 @@ pub struct Lookup {
     pub query: String,
     /// What is missing: `mpn`, `supplier`.
     pub needs: Vec<&'static str>,
+    /// The manufacturer part number the line already has, when only the supplier's is missing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mpn: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -436,6 +439,7 @@ pub fn review(design: &SchematicDesign) -> BomReview {
                     .collect::<Vec<_>>()
                     .join(" "),
                 needs,
+                mpn: field(sample, &MPN_FIELDS).map(str::to_owned),
             });
         }
     }

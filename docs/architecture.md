@@ -232,14 +232,15 @@ flowchart LR
 
 ### Parts, footprints, and BOM (Phase 10)
 
-The server reads every field of every part (standard and custom) and the do-not-populate and exclude flags, from the API or the file. The BOM is built from that; footprints are read from the library files on disk. Part data that does not exist yet (manufacturer, part numbers) comes from outside: the review hands the assistant a list of lookups, and the answers are written back as hidden fields by an ordinary plan.
+The server reads every field of every part (standard and custom) and the do-not-populate and exclude flags, from the API or the file. The BOM is built from that; footprints are read from the library files on disk. Part data that does not exist yet (manufacturer, part numbers) comes from outside: the review hands the assistant a list of lookups, `parts_lookup` (`kicad-domain::parts`) turns each into the calls to make on the pcbparts MCP, which is a separate server the installer offers to add, and the answers are written back as hidden fields by an ordinary plan. The server itself makes no network call. A `PartsSource` says where answers come from, so a source built into the server can take over the same tool without a change for the assistant.
 
 ```mermaid
 flowchart LR
     SHEET["The sheet<br/>all fields, DNP and<br/>exclude flags"] --> BOM["bom_get<br/>grouped lines"]
     SHEET --> REVIEW["bom_review<br/>what is missing,<br/>lookups to do"]
     LIBS["Footprint libraries<br/>install + project<br/>(.kicad_mod files)"] --> FP["fp_search, fp_get<br/>sch_footprint_plan<br/>pads vs pins, package"]
-    REVIEW -->|"lookup list"| ASSISTANT["Assistant with a<br/>parts-lookup tool<br/>(outside the server)"]
+    REVIEW -->|"lookup list"| PL["parts_lookup (stub)<br/>calls to make, fields<br/>to record; no network"]
+    PL -->|"source: pcbparts MCP<br/>(later: built in)"| ASSISTANT["Assistant calls the<br/>pcbparts MCP<br/>(outside the server)"]
     ASSISTANT -->|"part numbers"| FIELDS["sch_set_fields_plan<br/>hidden fields, flags"]
     FP --> APPLY["sch_apply_plan<br/>nets unchanged,<br/>every field read back"]
     FIELDS --> APPLY

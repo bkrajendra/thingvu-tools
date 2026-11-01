@@ -189,9 +189,16 @@ try {
         $calls = Get-Content $log -Raw
         Check ($calls -match 'mcp add --scope user kicad-ai -- ') 'with the right command'
         Check ($calls -match [regex]::Escape("$data\bin\kicad-ai-mcp.exe")) 'pointing at the installed server'
+        Check ($calls -match 'mcp add --scope user --transport http pcbparts https://pcbparts.dev/mcp') 'the parts-lookup MCP is offered, and added on yes'
+        Check ($text -match 'Parts lookup: added to Claude Code') 'and the summary says so'
+        Remove-Item $log
+        $null = Run-Script (Join-Path $package 'install.ps1') @('-Yes', '-NoPartsLookup', '-InstallDir', "$data\bin", '-DocumentsDir', $documents, '-Clients', 'ClaudeCode')
+        Check ((Get-Content $log -Raw) -notmatch 'pcbparts') '-NoPartsLookup never touches it'
         Remove-Item $log
         Run-Script (Join-Path $package 'uninstall.ps1') @('-Yes', '-DataDir', "$sandbox\nothing", '-DocumentsDir', $documents, '-Clients', 'ClaudeCode') | Out-Null
-        Check ((Get-Content $log -Raw) -match 'mcp remove kicad-ai --scope user') 'the uninstaller removes it, and an empty "remove" is not an error'
+        $calls = Get-Content $log -Raw
+        Check ($calls -match 'mcp remove kicad-ai --scope user') 'the uninstaller removes it, and an empty "remove" is not an error'
+        Check ($calls -match 'mcp remove pcbparts --scope user') 'and offers to remove the parts-lookup MCP too'
     }
     finally { $env:PATH = $savedPath }
 

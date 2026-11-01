@@ -17,6 +17,7 @@
 #   -SkipClients              do not touch Claude Code or Claude Desktop
 #   -Clients <list>           which clients to offer: ClaudeCode, ClaudeDesktop (default: both)
 #   -Yes                      answer yes to every question (except downloading Freerouting)
+#   -NoPartsLookup            do not offer the pcbparts MCP (see below)
 #   -WithFreerouting          also set up Freerouting, the optional autorouter (a separate
 #                             open-source program from its GitHub release; and, when no Java 25
 #                             is installed and its Java build is needed, Eclipse Temurin's Java
@@ -38,9 +39,13 @@ param(
     [switch]$SkipClients,
     [string[]]$Clients = @('ClaudeCode', 'ClaudeDesktop'),
     [switch]$Yes,
+    [switch]$NoPartsLookup,
     [string]$DocumentsDir,
     [string]$ClaudeDesktopConfig,
     [string]$Repository = 'bkrajendra/thingsvu-tools',
+    # The parts service the assistant uses to look up part numbers (a separate MCP server); only
+    # the installer's own test changes this.
+    [string]$PartsLookupUrl = 'https://pcbparts.dev/mcp',
     [switch]$WithFreerouting,
     [switch]$DownloadFreerouting,
     [switch]$FreeroutingOnly,
@@ -582,6 +587,32 @@ if (-not $SkipClients) {
     }
 }
 
+# --- 4a. Parts lookup: the pcbparts MCP -----------------------------------------------------------
+# thingsvu-tools finds which parts a BOM still needs (bom_review, parts_lookup); the search itself is
+# done by the pcbparts MCP, a separate free service (no key). Part values and package names go to
+# it when the assistant searches, so it is asked about every time.
+$partsNote = $null
+if (-not $SkipClients -and -not $NoPartsLookup) {
+    Step 'Looking up parts (pcbparts MCP)'
+    Write-Host 'To fill in manufacturer and supplier part numbers, your assistant needs a parts-lookup service.'
+    Write-Host "thingsvu-tools works with the pcbparts MCP ($PartsLookupUrl): JLCPCB, Mouser and DigiKey parts, stock and prices."
+    Write-Host 'It is a separate service run by someone else; the part values and packages your assistant searches for are sent to it. Nothing else is.'
+    $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+    if ($Clients -contains 'ClaudeCode' -and $claudeCmd) {
+        if (Ask 'Add the pcbparts MCP to Claude Code?') {
+            $null = Invoke-Native 'claude' @('mcp', 'remove', 'pcbparts', '--scope', 'user')
+            $code = Invoke-Native 'claude' @('mcp', 'add', '--scope', 'user', '--transport', 'http', 'pcbparts', $PartsLookupUrl)
+            if ($code -eq 0) { $partsNote = 'added to Claude Code'; Write-Host 'Claude Code: added "pcbparts".' }
+            else { Write-Warning "Claude Code: could not add pcbparts; run: claude mcp add --transport http pcbparts $PartsLookupUrl" }
+        }
+        else { $partsNote = "not added; to add it later: claude mcp add --transport http pcbparts $PartsLookupUrl" }
+    }
+    if ($Clients -contains 'ClaudeDesktop') {
+        Write-Host "Claude Desktop: add $PartsLookupUrl yourself under Settings > Connectors > Add custom connector (this installer does not edit that for remote servers)."
+        if (-not $partsNote) { $partsNote = "for Claude Desktop add $PartsLookupUrl as a custom connector" }
+    }
+}
+
 # --- 4b. The autorouter (optional) -----------------------------------------------------------
 $routerNote = $null
 if ($WithFreerouting -or $FreeroutingPath) {
@@ -605,6 +636,7 @@ Write-Host "MCP server:  $mcp"
 if ($pluginTargets) { Write-Host ('KiCad plugin: installed for KiCad ' + ($pluginTargets -join ', ')) }
 if ($configured) { Write-Host ('Connected:   ' + ($configured -join ', ') + ' (restart it to pick up the new tools)') }
 if ($routerNote) { Write-Host "Autorouter:  $routerNote" }
+if ($partsNote) { Write-Host "Parts lookup: $partsNote" }
 Write-Host @"
 
 Next steps
@@ -615,5 +647,7 @@ Next steps
   2. KiCad 11 (live editing): Preferences > Plugins > enable the KiCad API, restart KiCad, open the
      Schematic Editor, and press the "KiCad AI: connect" toolbar button.
   3. KiCad 10 or no KiCad running: ask your assistant to open the .kicad_sch file with the "file" provider.
-  4. Try it: "Open <your project>.kicad_sch and call session_status".
+  4. Part numbers: add the pcbparts MCP ($PartsLookupUrl) to your assistant if you have not; then ask
+     "Review the BOM and fill in the part numbers".
+  5. Try it: "Open <your project>.kicad_sch and call session_status".
 "@

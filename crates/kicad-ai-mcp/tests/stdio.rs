@@ -117,6 +117,7 @@ async fn lists_tools_and_returns_envelopes() {
             "checkpoint_restore",
             "fp_get",
             "fp_search",
+            "parts_lookup",
             "pcb_apply_plan",
             "pcb_autoroute_plan",
             "pcb_close",
@@ -184,9 +185,18 @@ async fn lists_tools_and_returns_envelopes() {
         .instructions
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
         .filter(|w| {
-            ["pcb_", "sch_", "sym_", "fp_", "bom_", "checkpoint_", "session_"]
-                .iter()
-                .any(|p| w.starts_with(p))
+            [
+                "pcb_",
+                "sch_",
+                "sym_",
+                "fp_",
+                "bom_",
+                "parts_",
+                "checkpoint_",
+                "session_",
+            ]
+            .iter()
+            .any(|p| w.starts_with(p))
         })
         .collect();
     for n in &named {
@@ -203,6 +213,7 @@ async fn lists_tools_and_returns_envelopes() {
         "sch_set_fields_plan",
         "sch_pin_net_plan",
         "bom_review",
+        "parts_lookup",
         "pcb_fab_package",
         "pcb_reload",
         "checkpoint_restore",
@@ -1531,6 +1542,42 @@ async fn bom_flow(provider: &str) {
     );
     assert!(!review["result"]["lookups"].as_array().unwrap().is_empty(), "{review}");
 
+    // The same lines as calls to make on the parts service; the server looks nothing up.
+    let parts = mcp.call("parts_lookup", json!({ "session_id": id })).await;
+    assert_eq!(parts["ok"], true, "{parts}");
+    assert_eq!(parts["result"]["source"]["name"], "pcbparts", "{parts}");
+    assert_eq!(parts["result"]["source"]["kind"], "external", "{parts}");
+    let requests = parts["result"]["requests"].as_array().unwrap();
+    assert_eq!(
+        requests.len(),
+        review["result"]["lookups"].as_array().unwrap().len(),
+        "{parts}"
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|r| r["status"] == "delegated" && !r["steps"].as_array().unwrap().is_empty()),
+        "{parts}"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|r| r["steps"][0]["tool"] == "jlc_search" && r["steps"][0]["arguments"]["query"].is_string()),
+        "{parts}"
+    );
+    let only = mcp
+        .call("parts_lookup", json!({ "session_id": id, "references": ["C1"] }))
+        .await;
+    assert!(
+        only["result"]["requests"].as_array().unwrap().len() < requests.len(),
+        "{only}"
+    );
+    let status = mcp.call("session_status", json!({})).await;
+    assert_eq!(
+        status["result"]["parts_lookup"]["source"]["name"], "pcbparts",
+        "{status}"
+    );
+
     // Fields: part numbers on the capacitors, and one resistor out of the BOM run.
     let plan = mcp
         .call(
@@ -1570,6 +1617,14 @@ async fn bom_flow(provider: &str) {
     assert!(
         !reviewed["result"]["lookups"].to_string().contains("\"C1\""),
         "C1 is complete now: {reviewed}"
+    );
+    let after = mcp
+        .call("parts_lookup", json!({ "session_id": id, "references": ["C1"] }))
+        .await;
+    assert_eq!(
+        after["result"]["requests"],
+        json!([]),
+        "nothing is left to look up for C1: {after}"
     );
 
     // A flag or field that makes no change, and bad requests, are refused or skipped.

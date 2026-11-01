@@ -59,9 +59,10 @@ The installer:
 1. puts `kicad-ai-mcp.exe` in `%LOCALAPPDATA%\thingsvu\kicad-ai\bin`;
 2. installs the **KiCad AI** plugin into your KiCad 11 plugin folder (`Documents\KiCad\<version>\plugins`) — KiCad 10 cannot run schematic plugins, so it is skipped there;
 3. offers to add the server to **Claude Code** and **Claude Desktop** (it keeps a backup of any settings file it changes);
-4. tells you what to do next.
+4. offers to add the **pcbparts MCP** (`https://pcbparts.dev/mcp`), the parts-lookup service the assistant uses to fill in part numbers. It is a separate free service; the part values and packages your assistant searches for are sent to it. Claude Code gets it added with `claude mcp add --transport http pcbparts https://pcbparts.dev/mcp`; for Claude Desktop add the same address under Settings → Connectors → Add custom connector;
+5. tells you what to do next.
 
-Useful options: `-Yes` (answer yes to everything), `-NoPlugin`, `-SkipClients`, `-KicadVersion 11.0`, `-Version 0.1.0`.
+Useful options: `-Yes` (answer yes to everything), `-NoPlugin`, `-SkipClients`, `-NoPartsLookup` (do not offer the pcbparts MCP), `-KicadVersion 11.0`, `-Version 0.1.0`.
 
 ### 2. Turn on KiCad's API (KiCad 11, live editing)
 
@@ -210,7 +211,7 @@ To get a schematic ready to order parts:
 
 > Review the BOM for a JLCPCB order. Look up the parts you can, fill in the part numbers, assign the missing footprints, and export the BOM.
 
-The server looks nothing up and makes no network calls. `bom_review` lists what is missing, with a search hint for each line; the assistant finds the parts with whatever parts-lookup tool it has (a JLCPCB, Mouser, or DigiKey connector, for example) and records the answers with `sch_set_fields_plan` (fields `MPN`, `Manufacturer`, `LCSC`). With no such tool the fields stay empty and the review keeps saying so.
+The server makes no network calls itself. `bom_review` lists what is missing; `parts_lookup` turns those lines into the exact calls to make on the **pcbparts MCP** (JLCPCB, Mouser and DigiKey parts, stock and prices, no key needed): a search such as `jlc_search` with the value and package of each line, or `jlc_get_part` for a part number you already have. The assistant makes those calls and records the answers with `sch_set_fields_plan` (fields `MPN`, `Manufacturer`, `LCSC`). The pcbparts MCP is a separate service run by someone else, and the values and packages searched for are sent to it; the installer asks whether to add it (see [Install](#1-install)). Without it the fields stay empty and the review keeps saying so. If thingsvu-tools gets its own parts data later, `parts_lookup` will answer itself and nothing about the workflow changes.
 
 After a tidy or a reconnect, KiCad decides where the text of each part lands, and it can run into a wire or another part's text. Ask for it to be cleaned up:
 
@@ -255,6 +256,7 @@ What each can do in detail: [capability matrix](docs/capability-matrix.md).
 | `sch_edit_items_plan` | Delete wires, labels, junctions, notes, and drawings by id, or move labels, notes, and drawings |
 | `bom_get` | The bill of materials as KiCad groups it, with every custom field. Read-only |
 | `bom_review` | What an order lacks: footprints, part numbers, supplier numbers, inconsistent values; plus a list of lookups to do. No network |
+| `parts_lookup` | The lookups as calls to make on the pcbparts MCP (search by value and package, or by part number) and the fields to record afterwards. Makes no call itself; read-only |
 | `sch_set_fields_plan` | Set fields on many parts at once: part numbers, manufacturer, datasheet, DNP, exclude from BOM (custom fields are added hidden) |
 | `sym_search` / `sym_get` | Search the symbol libraries by name, keyword, or description (default footprint and filters, pins, units) and read one symbol's pins without placing it |
 | `fp_search` / `fp_get` | Search the footprint libraries and read a footprint's pads and courtyard |

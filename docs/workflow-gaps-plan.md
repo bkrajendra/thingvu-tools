@@ -17,7 +17,7 @@ Some gaps are covered, partly or fully, by tools the session did not use or that
 | #16 Bottom 3D view and 2D layers | `pcb_render` already takes `side: bottom`; `pcb_export` `svg` writes one SVG per layer (v0.8.0) | A perspective or angled view, zoom; a schematic render cropped to the parts |
 | #1 Multi-point tracks and vias | `pcb_route_plan` takes any number of points with layers and puts vias where the layer changes | Deleting, locking, width changes, clean-up (a new tool) |
 | #11 Part numbers on parts | `sch_set_fields_plan` sets fields on placed parts | **A bug**: `fields` given to `sch_plan_changes` are accepted and silently dropped (`ComponentSpec.fields` never reaches the plan). Fix in 14.1 |
-| #30 Resolving the whole BOM | `bom_review` lists every lookup to do; `sch_set_fields_plan` records the answers in one plan | By design the server makes no network calls (see W1); the lookups stay with the assistant's parts tool |
+| #30 Resolving the whole BOM | `bom_review` lists every lookup to do; `sch_set_fields_plan` records the answers in one plan | The server makes no network calls itself (W1): `parts_lookup` (15.0) hands the lookups to the pcbparts MCP, which the installer offers to add |
 | #6 Board geometry | `pcb_list_footprints` with `include_pads` gives place, rotation, courtyard box, every pad's place, copper box, net, and layers | Pad size, shape, drill, and angle; courtyard outlines; drawings and text. Extend the tool (14.4) |
 | #20 Narrow autorouted tracks | `pcb_autoroute_plan` already warns when tracks are narrower than the board minimum | It should not produce them: give the router the minimum, or widen and recheck (14.1) |
 
@@ -72,7 +72,7 @@ Priority comes from the time each gap cost, how often a board needs it, and how 
 | 23 | Differential pairs: route a pair together at the class gap, report length mismatch; length matching by meanders | #28 | P3 | L | Freerouting can route pairs given the classes; doing it ourselves is large |
 | 24 | Impedance: a trace width and gap calculator from the stackup (microstrip and stripline formulas), checked against a net class target | #28 | P3 | M | Approximate formulas, said so in every result |
 | 25 | Layout checks: return path under signals (ground plane gaps), stitching density near the edge and layer changes, power track width against a current the user gives (IPC-2152) | #29 | P3 | M | Findings to look at, as `pcb_review` |
-| 26 | Whole-BOM resolution recipe: `bom_review` gives the lookups as one batch an assistant can hand to its parts tool, and `sch_set_fields_plan` takes the answers in one plan | #30 | P3 | S | Mostly documentation; no network in the server (W1) |
+| 26 | Whole-BOM resolution: `bom_review` gives the lookups, `parts_lookup` turns them into one batch of calls on the pcbparts MCP, and `sch_set_fields_plan` takes the answers in one plan | #30 | P2 (done as 15.0) | S | No network in the server; the installer offers the pcbparts MCP (W1) |
 
 ## Fixes carried over from earlier phases (Phase 13b)
 
@@ -112,12 +112,12 @@ flowchart LR
 
 | | Decision | Proposal |
 |---|---|---|
-| W1 | Parts lookups in the server (#30) | **No.** The server stays offline. `bom_review` gives the lookups; the assistant's parts tool answers them; `sch_set_fields_plan` records the answers. Revisit only if a parts source with a stable, keyless API appears |
+| W1 | Parts lookups in the server (#30) | **External for now, internal later** (project owner, 1 Nov 2026). The server makes no network call itself. Part lookups use the pcbparts MCP (`https://pcbparts.dev/mcp`, a separate service, no key), and **the installer always asks the user to add it**. A stub tool, `parts_lookup`, turns `bom_review`'s lookups into the exact calls to make there and the fields to record with `sch_set_fields_plan`. It is written against a `PartsSource`, so when a source of our own exists the same tool answers itself and nothing changes for the assistant. Task 15.0 |
 | W2 | Larger plans and tidies (#13, #14) | Raise the limit to 150 parts, measured first. The layout engine's run time and readability on large sheets are not known yet, so 14.1 measures a 150-part circuit and lowers the limit if it is slow or unreadable. Above the limit the answer is to split the circuit (sheets come later) |
 | W3 | Reverting a live editor (#24) | `RevertDocument` throws away unsaved changes, so it runs only with `discard_unsaved: true` and after the user has been told what they lose (the tool reports the modified state first). Headless sessions simply reopen |
 | W4 | Editing `.kicad_pro` directly (#3) | Through the API in live sessions. With the file provider (no editor open), edit only the JSON keys the tool owns (net classes, assignments, rules), keep everything else byte for byte, and check the result by running DRC with `kicad-cli` before replacing the file, as schematics are |
 | W5 | Diff pairs and impedance (#28) | Phase 16, approximate and labelled so. Not a field solver |
-| W6 | Routing (project owner, 31 Oct 2026) | **No router of our own.** `pcb_route_plan` stays for explicit, deliberate tracks. Anything complex goes to Freerouting through `pcb_autoroute_plan`, which gets better controls (14.8). Differential pairs (16.1) are routed by Freerouting given the net classes, and we check the result |
+| W6 | Routing (project owner, 31 Oct 2026; confirmed 1 Nov 2026) | **No router of our own.** `pcb_route_plan` stays for explicit, deliberate tracks. Anything complex goes to Freerouting through `pcb_autoroute_plan`, which gets better controls (14.8). Differential pairs (16.1) are routed by Freerouting given the net classes, and we check the result |
 
 ## Risks
 

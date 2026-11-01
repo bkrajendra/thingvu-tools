@@ -53,8 +53,9 @@ board; pcb_run_drc, pcb_review, and pcb_render check it. Sessions and safety: pc
 session_status say when the file changed on disk or the editor has unsaved changes; pcb_reload and \
 session_reload read the file again; checkpoint_create, checkpoint_diff, and checkpoint_restore keep \
 and restore copies of the project's files. To order a board: bom_review lists what the parts need \
-(footprints, values, MPN, supplier numbers), sch_set_fields_plan records the answers, bom_export \
-writes the BOM, and pcb_fab_package makes the Gerber, drill, BOM, and placement files for a board \
+(footprints, values, MPN, supplier numbers), parts_lookup turns that into the calls to make on the \
+pcbparts MCP (a separate server the assistant has; the installer offers to add it), \
+sch_set_fields_plan records the answers, bom_export writes the BOM, and pcb_fab_package makes the Gerber, drill, BOM, and placement files for a board \
 house (pcb_export for a single kind of file). Save with sch_save or pcb_save (a file session is \
 saved whenever a plan is applied). Close sessions with session_close or pcb_close when done.";
 
@@ -144,6 +145,16 @@ pub struct CloseArgs {
 #[serde(deny_unknown_fields)]
 pub struct SessionArgs {
     pub session_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PartsLookupArgs {
+    pub session_id: String,
+    /// Only the BOM lines that contain one of these references. Default: every line that lacks
+    /// a part number or a supplier part number.
+    #[serde(default)]
+    pub references: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
@@ -1218,6 +1229,10 @@ liveness, unsaved changes, whether the file on disk changed since the session re
                     "tool": "pcb_autoroute_plan",
                     "setup": "install.ps1 -FreeroutingOnly, then restart the server (see the README)",
                 },
+                "parts_lookup": {
+                    "tool": "parts_lookup",
+                    "source": kicad_domain::parts::active_source().describe(),
+                },
                 "gui_editors": gui_editors,
                 "sessions": statuses,
             }),
@@ -1822,8 +1837,8 @@ out by their own flag. Read-only."
 the same value written two ways (10k and 10K), parts left out of the BOM that go on the board, parts drawn \
 on top of each other, and parts with no manufacturer part number (field MPN), manufacturer, or supplier \
 part number (field LCSC, Mouser, DigiKey). Returns the issues and a list of lookups to do, each with a \
-search hint. The server looks nothing up and uses no network: find the parts with a parts-lookup tool \
-you have, then record the answers with sch_set_fields_plan. Read-only."
+search hint. The server looks nothing up itself: parts_lookup turns the lookups into the calls to make on \
+the pcbparts MCP, then record the answers with sch_set_fields_plan. Read-only."
     )]
     pub async fn bom_review(&self, Parameters(args): Parameters<SessionArgs>) -> CallToolResult {
         let cid = envelope::correlation_id();
@@ -1833,6 +1848,27 @@ you have, then record the answers with sch_set_fields_plan. Read-only."
         };
         match session.design().await {
             Ok(design) => envelope::ok(&cid, kicad_domain::bom::review(&design), live(&session), vec![]),
+            Err(e) => envelope::error(&cid, &e),
+        }
+    }
+
+    #[tool(
+        name = "parts_lookup",
+        description = "Turn the BOM's missing part data into the exact calls to make on the parts service, and the fields to record afterwards. For each BOM line that lacks a manufacturer part number or a supplier part number (the same lines as bom_review) it returns steps: the tool to call (jlc_search with a query and package from the value and footprint, or jlc_get_part for a known MPN, both on the pcbparts MCP), and record: which fields (MPN, Manufacturer, LCSC) take which answer. This server makes no network call itself; the pcbparts MCP (https://pcbparts.dev/mcp, no key) is a separate server the assistant calls, and a part's value and package go to it. When the assistant has no pcbparts tools, source.if_missing says what to ask the user to add. Then record the answers for every line in one sch_set_fields_plan. If this server gets its own parts data, this tool answers itself (status answered) and nothing else changes. Optional references limits it to some parts. Read-only."
+    )]
+    pub async fn parts_lookup(&self, Parameters(args): Parameters<PartsLookupArgs>) -> CallToolResult {
+        let cid = envelope::correlation_id();
+        let session = match self.session(&args.session_id).await {
+            Ok(s) => s,
+            Err(e) => return envelope::error(&cid, &e),
+        };
+        match session.design().await {
+            Ok(design) => {
+                let review = kicad_domain::bom::review(&design);
+                let lookup =
+                    kicad_domain::parts::plan_lookups(kicad_domain::parts::active_source(), &review, &args.references);
+                envelope::ok(&cid, lookup, live(&session), vec![])
+            }
             Err(e) => envelope::error(&cid, &e),
         }
     }

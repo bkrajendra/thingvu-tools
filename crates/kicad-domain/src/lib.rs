@@ -21,6 +21,7 @@ pub mod geometry;
 pub mod ids;
 pub mod layout;
 pub mod mechanical;
+pub mod parts;
 pub mod pin_net;
 pub mod placement;
 pub mod plan;

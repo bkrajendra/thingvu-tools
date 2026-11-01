@@ -28,7 +28,7 @@ What each kind of session can do, and which backend serves it. This is what `ses
 
 ## Review, tidy, and field changes
 
-These need no capability of their own: `sch_review`, `sch_describe_layout`, `sch_tidy_plan`, `sch_arrange_plan`, `sch_reconnect_plan`, `sch_pin_net_plan`, `sym_search`, `sym_get`, `sch_declutter_plan`, `sch_label_plan`, `sch_draw_plan`, `sch_edit_items_plan`, `bom_get`, `bom_review`, `sch_set_fields_plan`, and `sch_footprint_plan` read the sheet (`fp_search` and `fp_get` read library files and need no session) (`sch.read_symbols`, `sch.netlist`), and applying a tidy or `sch_set_field` needs `sch.place_symbol` and `sch.edit_items`.
+These need no capability of their own: `parts_lookup` (read-only; it returns calls for the assistant to make on the pcbparts MCP), `sch_review`, `sch_describe_layout`, `sch_tidy_plan`, `sch_arrange_plan`, `sch_reconnect_plan`, `sch_pin_net_plan`, `sym_search`, `sym_get`, `sch_declutter_plan`, `sch_label_plan`, `sch_draw_plan`, `sch_edit_items_plan`, `bom_get`, `bom_review`, `sch_set_fields_plan`, and `sch_footprint_plan` read the sheet (`fp_search` and `fp_get` read library files and need no session) (`sch.read_symbols`, `sch.netlist`), and applying a tidy or `sch_set_field` needs `sch.place_symbol` and `sch.edit_items`.
 
 | | Headless | GUI | File |
 |---|---|---|---|
